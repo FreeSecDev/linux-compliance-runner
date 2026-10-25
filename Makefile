@@ -6,6 +6,8 @@ MAKEFLAGS += --warn-undefined-variables --no-builtin-rules
 
 UV := $(shell command -v uv 2>/dev/null)
 RUN := uv run --frozen
+SMOKE_IMAGE := localhost/linux-compliance-runner:smoke
+CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null)
 TRACKED := git ls-files -z --cached --others --exclude-standard
 ZIZMOR_PERSONA := pedantic
 REQUIRED_SKILLS := architecture aws-infrastructure github-actions container-security python-quality \
@@ -31,7 +33,7 @@ Formatting and linting
   lint-actions          actionlint for GitHub workflows
   lint-repo             Repository source rules (document start, comments, banned modules)
   lint-skills           Validate agent skills under .agents/skills
-  lint-container        hadolint on every Containerfile; reports and skips while none exists
+  lint-container        hadolint on every Containerfile and a check that toolbox/uv.lock matches its pyproject
   lint-iac              [pending FREES-30] OpenTofu validation and Checkov
 
 Security and types
@@ -49,7 +51,7 @@ Image and AWS
   image-scan            [pending FREES-37] Scan the image for vulnerabilities
   sbom                  [pending FREES-37] Generate the image SBOM
   sign                  [pending FREES-37] Sign the image and attest the SBOM
-  image-smoke           [pending FREES-38] Smoke test the image
+  image-smoke           Build the toolbox image locally (never published) and run the smoke tests
 
 Docs and release
   docs                  markdownlint and relative link check
@@ -63,7 +65,7 @@ export HELP_TEXT
 
 .PHONY: help bootstrap install format lint lint-python lint-yaml lint-actions lint-repo \
 	lint-skills lint-container lint-iac security typecheck test test-unit test-coverage \
-	aws-bootstrap image-build image-scan sbom sign image-smoke docs release-check clean ci \
+	aws-bootstrap image-build image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
 	require-uv
 
 help:
@@ -110,13 +112,16 @@ lint-skills: require-uv
 		--required $(REQUIRED_SKILLS) \
 		--external $(EXTERNAL_SKILLS)
 
-lint-container: require-uv
+lint-container: require-uv toolbox-lock-check
 	@containerfiles="$$(git ls-files --cached --others --exclude-standard -- 'Containerfile' '*/Containerfile')"; \
 	if [ -z "$$containerfiles" ]; then \
-		printf 'lint-container: no Containerfile in the repository yet, nothing to lint (Containerfile tracked in FREES-35)\n'; \
+		printf 'lint-container: no Containerfile in the repository, nothing to lint\n'; \
 	else \
 		printf '%s\n' "$$containerfiles" | xargs $(RUN) hadolint; \
 	fi
+
+toolbox-lock-check: require-uv
+	uv lock --check --directory toolbox
 
 lint-iac:
 	$(call NOT_IMPLEMENTED,lint-iac,FREES-30)
@@ -154,8 +159,14 @@ sbom:
 sign:
 	$(call NOT_IMPLEMENTED,sign,FREES-37)
 
-image-smoke:
-	$(call NOT_IMPLEMENTED,image-smoke,FREES-38)
+image-smoke: require-uv
+	@if [ -z "$(CONTAINER_ENGINE)" ]; then \
+		printf 'error: docker or podman is required to build the smoke test image\n' >&2; \
+		exit 1; \
+	fi
+	$(CONTAINER_ENGINE) build --file Containerfile --tag $(SMOKE_IMAGE) \
+		--build-arg VCS_REF="$$(git rev-parse HEAD)" .
+	SMOKE_IMAGE=$(SMOKE_IMAGE) SMOKE_ENGINE=$(notdir $(CONTAINER_ENGINE)) $(RUN) pytest tests/smoke
 
 docs: require-uv
 	$(RUN) pre-commit run markdownlint-cli2 --all-files
