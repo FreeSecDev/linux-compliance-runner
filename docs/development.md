@@ -3,7 +3,7 @@
 The `Makefile` is the single entry point for developers and CI. `make ci` runs every implemented,
 credential-free stage locally and is what the pull request workflow runs, split into jobs.
 
-Jira: FREES-35 and FREES-38 (Containerfile and smoke tests), FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
+Jira: FREES-35 and FREES-38 (Containerfile and smoke tests), FREES-37 (Grype gate), FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
 FREES-71 (pull request workflow), FREES-22 (community files), FREES-81 (dependency configuration),
 FREES-29 (branch protection). The same foundation exists in the collection repository, which is the reference.
 
@@ -42,7 +42,7 @@ PyPI package, so no separate install is needed.
 | `test-unit` | implemented | `pytest tests/unit` |
 | `test-coverage` | implemented | Unit tests with branch coverage, 95% overall, 100% on `tools/` |
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
-| `clean` | implemented | Removes caches and coverage output |
+| `clean` | implemented | Removes caches, coverage output and `build/` (the Grype binary, database and scan reports) |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
 | `lint-renovate` | implemented | `renovate-config-validator --strict --no-global` with a pinned Renovate; needs Node.js 24 (CI installs it with `actions/setup-node`) |
 | `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
@@ -50,7 +50,8 @@ PyPI package, so no separate install is needed.
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |
 | `aws-bootstrap` | pending FREES-33 | AWS bootstrap |
 | `image-build` | pending FREES-36 | Runner image build on AWS |
-| `image-scan` | pending FREES-37 | Image vulnerability scan |
+| `image-scan` | implemented | Scans the local test image (`SCAN_IMAGE`, default the smoke tag; run `make image-smoke` first) with the pinned, checksum-verified Grype and a freshly verified vulnerability database, then applies the fail-closed exception gate `tools/security/grype_gate.py`; reports land in `build/image-scan/`. See [`image.md`](image.md#vulnerability-gate) |
+| `grype-expected-config` | implemented | Rewrites `security/grype-expected-config.json` from the last `make image-scan` report (variable fields blanked); used after a Grype bump, and the diff is reviewed |
 | `sbom` | pending FREES-37 | Image SBOM |
 | `sign` | pending FREES-37 | Image signature and SBOM attestation |
 | `image-smoke` | implemented | Builds `localhost/linux-compliance-runner:smoke` locally with docker or podman (never pushed) and runs `tests/smoke` against it read-only, as UID 10001, without capabilities or network; see [`image.md`](image.md) |

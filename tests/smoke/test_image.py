@@ -25,6 +25,11 @@ ENGINE: Final[str] = os.environ.get("SMOKE_ENGINE", "docker")
 REPOSITORY_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 SAMPLE_COLLECTION: Final[Path] = Path(__file__).resolve().parent / "sample_collection"
 TIMEOUT_SECONDS: Final[int] = 300
+BUILD_TIMEOUT_SECONDS: Final[int] = 900
+BUILD_DATE_REJECTED: Final[re.Pattern[str]] = re.compile(
+    r"^(?:#\d+ \d+\.\d+ )?BUILD_DATE (?:must be an RFC 3339|build argument is required)",
+    re.MULTILINE,
+)
 EXPECTED_ID: Final[int] = 10001
 
 pytestmark = pytest.mark.skipif(IMAGE is None, reason="SMOKE_IMAGE is not set")
@@ -201,6 +206,45 @@ def test_oci_labels_are_set() -> None:
     assert labels["org.opencontainers.image.source"] == (
         "https://github.com/FreeSecDev/linux-compliance-runner"
     )
+
+
+@pytest.mark.parametrize(
+    "build_date",
+    [
+        "",
+        "2026-10-25",
+        "2026-10-25 21:27:04Z",
+        "2026-10-25T24:00:00Z",
+        "2026-02-30T00:00:00Z",
+        "2026-10-25T21:27:04",
+        "2026-10-25T21:27:04Z\n2026",
+        "yesterday",
+    ],
+    ids=repr,
+)
+def test_build_rejects_a_build_date_that_is_not_rfc_3339(build_date: str) -> None:
+    progress = ["--progress=plain"] if ENGINE == "docker" else []
+    result = subprocess.run(
+        [
+            ENGINE,
+            "build",
+            *progress,
+            "--file",
+            str(REPOSITORY_ROOT / "Containerfile"),
+            "--target",
+            "toolbox",
+            "--build-arg",
+            f"BUILD_DATE={build_date}",
+            str(REPOSITORY_ROOT),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=BUILD_TIMEOUT_SECONDS,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert BUILD_DATE_REJECTED.search(output), output
 
 
 def test_no_setuid_or_setgid_files() -> None:

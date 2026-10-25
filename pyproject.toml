@@ -104,6 +104,9 @@ ignore-paths = ["^\\.venv/", "^\\.agents/", "^\\.claude/"]
 [tool.pylint.format]
 max-line-length = 100
 
+[tool.pylint.design]
+max-attributes = 10
+
 [tool.pylint."messages control"]
 enable = ["useless-suppression"]
 disable = [
@@ -118,6 +121,7 @@ disable = [
 [tool.freesecdev.pylint-justifications]
 duplicate-code = "Two small standalone tools share the fence-marker constant; extracting a shared module would add coupling for a three-line constant."
 too-few-public-methods = "Frozen slotted dataclasses are deliberate value objects."
+max-attributes = "Raised from 7 to 10: the frozen dataclasses for an exceptions entry and a Grype finding mirror the fields of those external formats one to one; splitting them would only add indirection."
 missing-function-docstring = "Applies to test functions, whose names describe them; public tools code is enforced by Ruff D rules."
 missing-module-docstring = "Applies to test modules; public tools code is enforced by Ruff D rules."
 use-implicit-booleaness-not-comparison = "Tests assert an explicit empty list so that None or other falsy values fail."
