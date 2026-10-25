@@ -67,10 +67,22 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/* /etc/apk/cache
 
 FROM runtime-base AS toolbox
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 ARG IMAGE_VERSION=0.0.0-dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE
-RUN test -n "${BUILD_DATE}" || { echo "BUILD_DATE build argument is required (RFC 3339)" >&2; exit 1; }
+RUN if [ -z "${BUILD_DATE}" ]; then \
+      echo "BUILD_DATE build argument is required (RFC 3339)" >&2; \
+      exit 1; \
+    fi \
+    && day="${BUILD_DATE%%T*}" \
+    && if [ "$(printf '%s' "${BUILD_DATE}" | wc -l)" -ne 0 ] \
+      || ! printf '%s' "${BUILD_DATE}" | grep -Eqx \
+        '[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])' \
+      || [ "$(date -u -d "${day}" +%Y-%m-%d 2>/dev/null)" != "${day}" ]; then \
+      echo "BUILD_DATE must be an RFC 3339 date-time such as 2026-10-25T21:27:04Z" >&2; \
+      exit 1; \
+    fi
 LABEL org.opencontainers.image.title="linux-compliance-runner" \
       org.opencontainers.image.description="CI toolbox for the freesecdev.linux_compliance collection; not a self-hosted runner" \
       org.opencontainers.image.source="https://github.com/FreeSecDev/linux-compliance-runner" \
