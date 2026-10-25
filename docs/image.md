@@ -47,11 +47,15 @@ The image ships Alpine's uv 0.11.19 while CI uses uv 0.13.1; uv only exports the
   `make lint-renovate` (part of `make lint`) runs `renovate-config-validator --strict --no-global` with a pinned Renovate
   version; it needs Node.js 24 and fails with a clear message otherwise. The 7-day `minimumReleaseAge` also applies to these
   managers, so a security release of OpenTofu or CPython needs a manual pull request.
+- `RENOVATE_VERSION` in the Makefile is tracked by a regex manager on the npm datasource. CI runs the validator on Node.js 24.22.1
+  (the 2026-10-20 security release, same as the image). `npx` has no lockfile, so Renovate's transitive packages are not
+  pinned; a committed lockfile is tracked separately.
 - The python-build-standalone manager tracks the release tag and the archive digest. Its asset name contains the CPython
-  patch version, so when a newer release no longer carries 3.12.15 the bot cannot compute a digest and a maintainer updates
+  patch version, so the upstream `SHA256SUMS` (142 KB) exceeds the datasource's 5120-byte checksum-file limit and Renovate falls back to
+  downloading and hashing release assets until one matches (about 109 assets and 2.8 GB per lookup). When a newer release no longer carries 3.12.15 the bot cannot compute a digest and a maintainer updates
   `PYTHON_VERSION` and the checksum by hand from the release `SHA256SUMS`.
 - `apk` pins are not updated by any bot yet (planned). Renovate's `dockerfile` manager reads `apk add name=version` pins
-  but, in the version tested (44.181.5), marks them skipped at extraction with `unknown-registry`, so no custom manager can
+  but, in the version tested (44.167.5), marks them skipped at extraction with `unknown-registry`, so no custom manager can
   revive them from configuration alone. Bump them by hand when a build reports a missing package version.
 
 Bump the OpenTofu checksum from the project's `tofu_<version>_SHA256SUMS` (linux_amd64 line) and compare it with the signed release.
@@ -76,9 +80,9 @@ make lint-container
   `/home/toolbox`, and the checkout at `/work`.
 - No credentials, build secrets or tokens. The OCI labels carry source, licence, version and revision only.
 - OCI labels: title, description, source, url, documentation, licenses, vendor, base name, version, revision, created.
-  `version`, `revision` and `created` default to `0.0.0-dev`, `unknown` and `1970-01-01T00:00:00Z` and are set with
-  `--build-arg` (`IMAGE_VERSION`, `VCS_REF`, `BUILD_DATE`); `make image-smoke` sets the revision and derives the date from
-  `SOURCE_DATE_EPOCH` (default: the commit time).
+  `version` and `revision` default to `0.0.0-dev` and `unknown`; `BUILD_DATE` (RFC 3339) has no default and the build fails
+  without it. They are set with `--build-arg` (`IMAGE_VERSION`, `VCS_REF`, `BUILD_DATE`); `make image-smoke` sets the revision
+  and derives the date from `SOURCE_DATE_EPOCH` (default: the commit time).
 
 ## Variants
 

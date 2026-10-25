@@ -69,7 +69,8 @@ RUN apk add --no-cache \
 FROM runtime-base AS toolbox
 ARG IMAGE_VERSION=0.0.0-dev
 ARG VCS_REF=unknown
-ARG BUILD_DATE=1970-01-01T00:00:00Z
+ARG BUILD_DATE
+RUN test -n "${BUILD_DATE}" || { echo "BUILD_DATE build argument is required (RFC 3339)" >&2; exit 1; }
 LABEL org.opencontainers.image.title="linux-compliance-runner" \
       org.opencontainers.image.description="CI toolbox for the freesecdev.linux_compliance collection; not a self-hosted runner" \
       org.opencontainers.image.source="https://github.com/FreeSecDev/linux-compliance-runner" \

@@ -46,6 +46,18 @@
       "depNameTemplate": "astral-sh/python-build-standalone",
       "datasourceTemplate": "github-release-attachments",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Renovate version used by make lint-renovate",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/"
+      ],
+      "matchStrings": [
+        "RENOVATE_VERSION := (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
     }
   ],
   "pinDigests": true,

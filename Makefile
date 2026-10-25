@@ -6,7 +6,7 @@ MAKEFLAGS += --warn-undefined-variables --no-builtin-rules
 
 UV := $(shell command -v uv 2>/dev/null)
 RUN := uv run --frozen
-RENOVATE_VERSION := 44.181.5
+RENOVATE_VERSION := 44.167.5
 SMOKE_IMAGE := localhost/linux-compliance-runner:smoke
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 BUILD_DATE := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
