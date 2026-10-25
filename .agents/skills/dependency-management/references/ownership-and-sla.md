@@ -4,16 +4,21 @@
 
 | Ecosystem | Owner |
 |---|---|
-| Container image digests | Renovate |
+| Container image digests (Alpine base image digest) | Renovate |
+| Alpine apk package pins | Renovate (planned, FREES-35) |
 | GitHub Actions SHAs | Renovate |
-| Packer plugins | Renovate |
 | OpenTofu providers | Renovate |
-| Pinned tool versions (Makefile, version files) | Renovate custom managers |
-| Ansible Galaxy collection requirements | Renovate |
-| pre-commit hooks | Renovate |
-| Python (pip, uv) versions and security updates | Dependabot |
+| pre-commit hooks (remote hook repositories) | Renovate |
+| Python (pip, uv) versions and security updates, including hadolint (`hadolint-bin`) | Dependabot |
+| `setup-uv` `version:` input | Renovate |
+| Python runtime (`.python-version`, `setup-python`) | Manual pull request |
+| Security updates for Python and GitHub Actions | Dependabot security updates |
+| Security fixes for images, apk pins, hooks, providers | Renovate schedule (documented residual risk) |
+| Packer plugins, Ansible Galaxy requirements, custom managers | Not used in this repository |
 
-Renovate Python managers stay disabled.
+Renovate Python managers stay disabled, and Renovate also disables the `pypi` and `python-version` datasources and
+the `actions/python-versions` package. Renovate's `vulnerabilityAlerts` is disabled. The `pre-commit` manager is
+enabled explicitly because it is off by default.
 
 ## Severity SLA
 
@@ -33,7 +38,7 @@ created date and an expiry date no later than 90 days out. CI fails on expired e
 
 ## Pull request body template
 
-```
+```text
 Summary of updates and release notes links.
 
 Refs: FREES-<maintenance-issue>
