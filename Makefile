@@ -6,6 +6,11 @@ MAKEFLAGS += --warn-undefined-variables --no-builtin-rules
 
 UV := $(shell command -v uv 2>/dev/null)
 RUN := uv run --frozen
+RENOVATE_VERSION := 44.167.5
+SMOKE_IMAGE := localhost/linux-compliance-runner:smoke
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
+BUILD_DATE := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
+CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null)
 TRACKED := git ls-files -z --cached --others --exclude-standard
 ZIZMOR_PERSONA := pedantic
 REQUIRED_SKILLS := architecture aws-infrastructure github-actions container-security python-quality \
@@ -31,7 +36,8 @@ Formatting and linting
   lint-actions          actionlint for GitHub workflows
   lint-repo             Repository source rules (document start, comments, banned modules)
   lint-skills           Validate agent skills under .agents/skills
-  lint-container        hadolint on every Containerfile; reports and skips while none exists
+  lint-renovate         renovate-config-validator (pinned Renovate, needs Node.js 24)
+  lint-container        hadolint on every Containerfile and a check that toolbox/uv.lock matches its pyproject
   lint-iac              [pending FREES-30] OpenTofu validation and Checkov
 
 Security and types
@@ -49,7 +55,7 @@ Image and AWS
   image-scan            [pending FREES-37] Scan the image for vulnerabilities
   sbom                  [pending FREES-37] Generate the image SBOM
   sign                  [pending FREES-37] Sign the image and attest the SBOM
-  image-smoke           [pending FREES-38] Smoke test the image
+  image-smoke           Build the toolbox image locally (never published) and run the smoke tests
 
 Docs and release
   docs                  markdownlint and relative link check
@@ -62,8 +68,8 @@ endef
 export HELP_TEXT
 
 .PHONY: help bootstrap install format lint lint-python lint-yaml lint-actions lint-repo \
-	lint-skills lint-container lint-iac security typecheck test test-unit test-coverage \
-	aws-bootstrap image-build image-scan sbom sign image-smoke docs release-check clean ci \
+	lint-skills lint-container lint-renovate lint-iac security typecheck test test-unit test-coverage \
+	aws-bootstrap image-build image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
 	require-uv
 
 help:
@@ -89,7 +95,16 @@ format: require-uv
 	$(RUN) ruff check --fix .
 	$(RUN) ruff format .
 
-lint: lint-repo lint-skills lint-python lint-yaml lint-actions lint-container
+lint: lint-repo lint-skills lint-python lint-yaml lint-actions lint-container lint-renovate
+
+lint-renovate:
+	@node_major="$$(node --version 2>/dev/null | sed -e 's/^v//' -e 's/\..*//')"; \
+	if [ -z "$$node_major" ] || [ "$$node_major" -lt 24 ]; then \
+		printf 'error: lint-renovate needs Node.js 24 or newer on PATH (found: %s); Renovate %s does not run on older versions\n' \
+			"$${node_major:-none}" '$(RENOVATE_VERSION)' >&2; \
+		exit 1; \
+	fi
+	npx --yes --package renovate@$(RENOVATE_VERSION) renovate-config-validator --strict --no-global .renovaterc.json
 
 lint-python: require-uv
 	$(RUN) ruff check .
@@ -110,13 +125,16 @@ lint-skills: require-uv
 		--required $(REQUIRED_SKILLS) \
 		--external $(EXTERNAL_SKILLS)
 
-lint-container: require-uv
+lint-container: require-uv toolbox-lock-check
 	@containerfiles="$$(git ls-files --cached --others --exclude-standard -- 'Containerfile' '*/Containerfile')"; \
 	if [ -z "$$containerfiles" ]; then \
-		printf 'lint-container: no Containerfile in the repository yet, nothing to lint (Containerfile tracked in FREES-35)\n'; \
+		printf 'lint-container: no Containerfile in the repository, nothing to lint\n'; \
 	else \
 		printf '%s\n' "$$containerfiles" | xargs $(RUN) hadolint; \
 	fi
+
+toolbox-lock-check: require-uv
+	uv lock --check --directory toolbox
 
 lint-iac:
 	$(call NOT_IMPLEMENTED,lint-iac,FREES-30)
@@ -154,8 +172,14 @@ sbom:
 sign:
 	$(call NOT_IMPLEMENTED,sign,FREES-37)
 
-image-smoke:
-	$(call NOT_IMPLEMENTED,image-smoke,FREES-38)
+image-smoke: require-uv
+	@if [ -z "$(CONTAINER_ENGINE)" ]; then \
+		printf 'error: docker or podman is required to build the smoke test image\n' >&2; \
+		exit 1; \
+	fi
+	$(CONTAINER_ENGINE) build --file Containerfile --tag $(SMOKE_IMAGE) \
+		--build-arg VCS_REF="$$(git rev-parse HEAD)" --build-arg BUILD_DATE=$(BUILD_DATE) .
+	SMOKE_IMAGE=$(SMOKE_IMAGE) SMOKE_ENGINE=$(notdir $(CONTAINER_ENGINE)) $(RUN) pytest tests/smoke
 
 docs: require-uv
 	$(RUN) pre-commit run markdownlint-cli2 --all-files

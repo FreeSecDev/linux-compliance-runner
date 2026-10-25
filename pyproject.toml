@@ -51,6 +51,7 @@ ignore = ["D203", "D213", "TRY003"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "D", "ANN401", "SLF001", "FBT001", "INP001"]
 "tools/**" = ["T201"]
+"tests/smoke/**" = ["S108", "S603"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -73,6 +74,8 @@ known-first-party = ["tools"]
 "ruff FBT001 (tests/**)" = "Parametrized expectations are booleans passed by pytest, not a public API."
 "ruff INP001 (tests/**)" = "Tests are collected in importlib mode and are not importable packages."
 "ruff T201 (tools/**)" = "Command-line tools report to the terminal with print by design."
+"ruff S603 (tests/smoke/**)" = "The smoke tests exist to run the container engine with an argument list built from constants and the SMOKE_IMAGE variable; shell=False is used and no untrusted input reaches the call."
+"ruff S108 (tests/smoke/**)" = "/tmp is the path of the tmpfs mount inside the container under test, not a temporary file on the host."
 
 [tool.mypy]
 strict = true

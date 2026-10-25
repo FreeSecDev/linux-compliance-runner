@@ -1,0 +1,12 @@
+---
+namespace: freesecdev
+name: smoke
+version: 1.0.0
+readme: README.md
+authors:
+  - FreeSecDev
+description: Sample collection used by the toolbox image smoke tests
+license:
+  - Apache-2.0
+tags:
+  - smoke

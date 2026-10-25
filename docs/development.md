@@ -3,7 +3,7 @@
 The `Makefile` is the single entry point for developers and CI. `make ci` runs every implemented,
 credential-free stage locally and is what the pull request workflow runs, split into jobs.
 
-Jira: FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
+Jira: FREES-35 and FREES-38 (Containerfile and smoke tests), FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
 FREES-71 (pull request workflow), FREES-22 (community files), FREES-81 (dependency configuration),
 FREES-29 (branch protection). The same foundation exists in the collection repository, which is the reference.
 
@@ -30,7 +30,7 @@ PyPI package, so no separate install is needed.
 | `bootstrap` | implemented | `install` plus tool version check |
 | `install` | implemented | `uv sync --frozen`, installs both git hook types |
 | `format` | implemented | `ruff check --fix` and `ruff format` |
-| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-container` |
+| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-container`, `lint-renovate` |
 | `lint-python` | implemented | Ruff lint, Ruff format check, Pylint |
 | `lint-yaml` | implemented | `yamllint --strict` |
 | `lint-actions` | implemented | actionlint |
@@ -44,14 +44,16 @@ PyPI package, so no separate install is needed.
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
 | `clean` | implemented | Removes caches and coverage output |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
-| `lint-container` | implemented | hadolint on every tracked `Containerfile`; prints that there is nothing to lint and exits 0 while none exists, and runs `uv run --frozen hadolint` once one does |
+| `lint-renovate` | implemented | `renovate-config-validator --strict --no-global` with a pinned Renovate; needs Node.js 24 (CI installs it with `actions/setup-node`) |
+| `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
+| `toolbox-lock-check` | implemented | Fails when `toolbox/uv.lock` does not match `toolbox/pyproject.toml` |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |
 | `aws-bootstrap` | pending FREES-33 | AWS bootstrap |
 | `image-build` | pending FREES-36 | Runner image build on AWS |
 | `image-scan` | pending FREES-37 | Image vulnerability scan |
 | `sbom` | pending FREES-37 | Image SBOM |
 | `sign` | pending FREES-37 | Image signature and SBOM attestation |
-| `image-smoke` | pending FREES-38 | Image smoke tests |
+| `image-smoke` | implemented | Builds `localhost/linux-compliance-runner:smoke` locally with docker or podman (never pushed) and runs `tests/smoke` against it read-only, as UID 10001, without capabilities or network; see [`image.md`](image.md) |
 | `release-check` | pending FREES-84 | Release readiness |
 
 The required and external skill lists are passed explicitly by `make lint-skills` and by the `skill-validator`
@@ -151,6 +153,7 @@ Configuration relaxations, each with its reason:
 | `typecheck` | `make typecheck` |
 | `test` | `make test-coverage` |
 | `security` | `make security` |
+| `container` | `make lint-container` and `make image-smoke`; a test build on a GitHub-hosted runner, not a release artifact |
 | `ci-gate` | none; fails unless every needed job succeeded |
 
 `ci-gate` runs with `if: always()` and is the only check that branch protection should require. Job names
