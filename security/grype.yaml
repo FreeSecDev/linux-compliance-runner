@@ -1,0 +1,11 @@
+---
+check-for-app-update: false
+only-fixed: false
+only-notfixed: false
+ignore-wontfix: ""
+exclude: []
+db:
+  auto-update: false
+  require-update-check: false
+  validate-age: true
+  validate-by-hash-on-start: true

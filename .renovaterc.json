@@ -49,6 +49,20 @@
     },
     {
       "customType": "regex",
+      "description": "Grype release version and the SHA-256 of its linux/amd64 archive, pinned together in the Makefile for make image-scan",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/"
+      ],
+      "matchStrings": [
+        "GRYPE_VERSION := (?<currentValue>\\S+)\\nGRYPE_SHA256_LINUX_AMD64 := (?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "anchore/grype",
+      "datasourceTemplate": "github-release-attachments",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Renovate version used by make lint-renovate",
       "managerFilePatterns": [
         "/(^|/)Makefile$/"
@@ -144,6 +158,16 @@
         "area/runner"
       ],
       "groupName": "toolbox binaries"
+    },
+    {
+      "description": "The pinned Grype scanner used by make image-scan; it is not shipped in the image",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "anchore/grype"
+      ],
+      "groupName": "image scanner"
     },
     {
       "description": "Container base image digests and tags in Containerfiles",
