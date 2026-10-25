@@ -14,7 +14,9 @@
 | Python runtime (`.python-version`, `setup-python`) | Manual pull request |
 | Security updates for Python and GitHub Actions | Dependabot security updates |
 | Security fixes for images, apk pins, hooks, providers | Renovate schedule (documented residual risk) |
-| Packer plugins, Ansible Galaxy requirements, custom managers | Not used in this repository |
+| OpenTofu and python-build-standalone release versions and checksums in the `Containerfile` | Renovate (`customManagers` regex) |
+| Python tools in the toolbox image (`toolbox/uv.lock`) | Dependabot |
+| Packer plugins, Ansible Galaxy requirements | Not used in this repository |
 
 Renovate Python managers stay disabled, and Renovate also disables the `pypi` and `python-version` datasources and
 the `actions/python-versions` package. Renovate's `vulnerabilityAlerts` is disabled. The `pre-commit` manager is

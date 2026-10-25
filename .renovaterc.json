@@ -33,6 +33,19 @@
       "datasourceTemplate": "github-release-attachments",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "python-build-standalone release tag and the SHA-256 of its linux/amd64 musl CPython archive, pinned together in the Containerfile",
+      "managerFilePatterns": [
+        "/(^|/)Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG PYTHON_BUILD_STANDALONE_RELEASE=(?<currentValue>\\d+)\\nARG PYTHON_BUILD_STANDALONE_SHA256_AMD64=(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "astral-sh/python-build-standalone",
+      "datasourceTemplate": "github-release-attachments",
+      "versioningTemplate": "loose"
     }
   ],
   "pinDigests": true,

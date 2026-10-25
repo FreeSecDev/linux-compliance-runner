@@ -2,8 +2,11 @@ FROM docker.io/library/alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aa
 
 FROM alpine-base AS downloads
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
-ARG OPENTOFU_VERSION=1.13.1
-ARG OPENTOFU_SHA256_AMD64=378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
+ARG OPENTOFU_VERSION=1.13.2
+ARG OPENTOFU_SHA256_AMD64=ac05d9952662c7db28dd57e93f0a68018837bfdf9342384ec0987977c16a9645
+ARG PYTHON_VERSION=3.12.15
+ARG PYTHON_BUILD_STANDALONE_RELEASE=20261013
+ARG PYTHON_BUILD_STANDALONE_SHA256_AMD64=99e53f010e58b62dd5bc849cc4822bde9fff7171c6d020fbe4afed2d861ccc77
 RUN apk add --no-cache ca-certificates=20261020-r0 curl=8.23.0-r0
 WORKDIR /download
 RUN test "$(uname -m)" = x86_64 \
@@ -14,22 +17,33 @@ RUN test "$(uname -m)" = x86_64 \
     && echo "${OPENTOFU_SHA256_AMD64}  ${archive}" | sha256sum -c - \
     && tar -xzf "${archive}" tofu \
     && install -D -m 0755 tofu /out/usr/local/bin/tofu
+RUN test "$(uname -m)" = x86_64 \
+    && archive="cpython-${PYTHON_VERSION}+${PYTHON_BUILD_STANDALONE_RELEASE}-x86_64-unknown-linux-musl-install_only_stripped.tar.gz" \
+    && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --output "${archive}" \
+      "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_STANDALONE_RELEASE}/${archive}" \
+    && echo "${PYTHON_BUILD_STANDALONE_SHA256_AMD64}  ${archive}" | sha256sum -c - \
+    && mkdir -p /out/opt \
+    && tar -xzf "${archive}" -C /out/opt \
+    && rm -rf /out/opt/python/share /out/opt/python/lib/python3.12/ensurepip /out/opt/python/lib/python3.12/idlelib \
+      /out/opt/python/lib/python3.12/test /out/opt/python/lib/python3.12/site-packages/pip* \
+    && rm -f /out/opt/python/bin/pip* /out/opt/python/bin/idle* /out/opt/python/bin/2to3* \
+    && /out/opt/python/bin/python3.12 --version
 
 FROM alpine-base AS python-env
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
-ARG PYTHON_VERSION=3.12.13
-ENV UV_PYTHON_INSTALL_DIR=/opt/python \
-    UV_PYTHON_DOWNLOADS=manual \
+ENV UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1
 RUN apk add --no-cache ca-certificates=20261020-r0 uv=0.11.19-r1
+COPY --from=downloads /out/opt/python /opt/python
 COPY toolbox/pyproject.toml toolbox/uv.lock /toolbox/
 RUN uv export --directory /toolbox --frozen --no-emit-project --no-header --no-annotate \
         --format requirements-txt --output-file /tmp/requirements.txt \
-    && uv python install "${PYTHON_VERSION}" \
-    && uv venv --python "${PYTHON_VERSION}" /opt/venv \
+    && uv venv --python /opt/python/bin/python3.12 /opt/venv \
     && uv pip install --python /opt/venv/bin/python --require-hashes --no-deps --only-binary :all: \
         --compile-bytecode --requirement /tmp/requirements.txt \
+    && find /opt/venv/lib -type d -name tests -prune -exec rm -rf {} + \
     && chmod -R u=rwX,g=rX,o=rX /opt/python /opt/venv
 
 FROM alpine-base AS runtime-base
@@ -55,7 +69,7 @@ RUN apk add --no-cache \
 FROM runtime-base AS toolbox
 ARG IMAGE_VERSION=0.0.0-dev
 ARG VCS_REF=unknown
-ARG BUILD_DATE=unknown
+ARG BUILD_DATE=1970-01-01T00:00:00Z
 LABEL org.opencontainers.image.title="linux-compliance-runner" \
       org.opencontainers.image.description="CI toolbox for the freesecdev.linux_compliance collection; not a self-hosted runner" \
       org.opencontainers.image.source="https://github.com/FreeSecDev/linux-compliance-runner" \
@@ -75,7 +89,6 @@ ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     LANG=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_PYTHON_INSTALL_DIR=/opt/python \
     UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/.cache/uv \
     XDG_CACHE_HOME=/tmp/.cache \

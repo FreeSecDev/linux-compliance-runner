@@ -24,6 +24,7 @@ The configuration files are committed, but the bots are not confirmed active:
 | Container image digests, including the Alpine base image digest in the `Containerfile` | Renovate | Images are consumed by digest only; the `dockerfile` manager matches `Containerfile` by default |
 | Alpine `apk` package pins in the `Containerfile` | Manual (Renovate planned) | Renovate's `dockerfile` manager reads the pins but skips them at extraction (`unknown-registry`), so no bot updates them yet; a build that reports a missing version is fixed by a pull request that bumps the pin. See [`image.md`](image.md) |
 | OpenTofu version and archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource updates version and checksum together |
+| python-build-standalone release and CPython archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource; the toolbox's CPython minor version still changes only by a deliberate pull request |
 | Python tools in the toolbox image (`toolbox/pyproject.toml`, `toolbox/uv.lock`) | Dependabot | A second `uv` entry for `/toolbox`; the Containerfile exports the lock during the build |
 | pre-commit hooks | Renovate | Hooks are pinned by revision |
 | Terraform and OpenTofu providers | Renovate | Provider lock handling and version constraints |
@@ -96,3 +97,11 @@ no later than 90 days out. The authoritative tables are in
 - [ADR 0005](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0005-renovate-version-annotations.md), [ADR 0006](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0006-toolchain-selection.md)
 - [`SECURITY.md`](../SECURITY.md) for reporting vulnerabilities
 - Jira: FREES-81 (dependency configuration), FREES-35 (Containerfile, toolbox lock and binary pin managers)
+
+## Vulnerability exceptions
+
+Accepted findings are recorded in [`security/vulnerability-exceptions.yaml`](../security/vulnerability-exceptions.yaml)
+with finding ID, component, severity, justification, owner, Jira issue, creation date and an expiry at most 90 days out.
+A unit test fails on incomplete, over-long or expired entries. Current entries (all created 2026-10-25, expiring
+2027-01-23): the `golang.org/x/net` and `grpc` findings compiled into OpenTofu 1.13.2 (FREES-37; no OpenTofu release
+includes the fixes yet) and `ecdsa` 0.19.2 (FREES-82; no fixed release exists). Details are in [`image.md`](image.md).

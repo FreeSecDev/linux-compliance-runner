@@ -30,7 +30,7 @@ PyPI package, so no separate install is needed.
 | `bootstrap` | implemented | `install` plus tool version check |
 | `install` | implemented | `uv sync --frozen`, installs both git hook types |
 | `format` | implemented | `ruff check --fix` and `ruff format` |
-| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-container` |
+| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-container`, `lint-renovate` |
 | `lint-python` | implemented | Ruff lint, Ruff format check, Pylint |
 | `lint-yaml` | implemented | `yamllint --strict` |
 | `lint-actions` | implemented | actionlint |
@@ -44,6 +44,7 @@ PyPI package, so no separate install is needed.
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
 | `clean` | implemented | Removes caches and coverage output |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
+| `lint-renovate` | implemented | `renovate-config-validator --strict --no-global` with a pinned Renovate; needs Node.js 24 (CI installs it with `actions/setup-node`) |
 | `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
 | `toolbox-lock-check` | implemented | Fails when `toolbox/uv.lock` does not match `toolbox/pyproject.toml` |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |

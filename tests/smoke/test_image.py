@@ -190,10 +190,14 @@ def test_oci_labels_are_set() -> None:
         "org.opencontainers.image.licenses",
         "org.opencontainers.image.version",
         "org.opencontainers.image.revision",
+        "org.opencontainers.image.created",
         "org.opencontainers.image.base.name",
     )
     for label in required:
         assert labels.get(label), f"missing OCI label {label}"
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", labels["org.opencontainers.image.created"]
+    )
     assert labels["org.opencontainers.image.source"] == (
         "https://github.com/FreeSecDev/linux-compliance-runner"
     )
@@ -273,7 +277,7 @@ def test_no_credentials_in_environment_or_files() -> None:
     for name in re.findall(r"^([A-Za-z0-9_]+)=", environment, re.MULTILINE):
         assert not re.search(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|AWS_", name), name
     script = (
-        "find / -xdev \\( -path /opt/venv -o -path /opt/python \\) -prune -o "
+        "find / -xdev -path '*/site-packages' -prune -o "
         "\\( -name '.netrc' -o -name '.git-credentials' -o -name 'id_rsa*' "
         "-o -name 'id_ed25519*' -o -name '.pypirc' -o -name '.npmrc' -o -name 'credentials' "
         "-o -name '.docker' -o -name '.aws' \\) -print; true"
@@ -281,3 +285,10 @@ def test_no_credentials_in_environment_or_files() -> None:
     result = shell(script, user="0")
     assert result.stderr.strip() == ""
     assert result.stdout.strip() == ""
+
+
+def test_python_tree_is_pruned() -> None:
+    result = shell("ls /opt/python/bin; ls /opt/python/lib/python3.12/site-packages")
+    assert result.returncode == 0, result.stderr
+    assert "pip" not in result.stdout
+    assert "idle" not in result.stdout

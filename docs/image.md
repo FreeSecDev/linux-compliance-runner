@@ -12,9 +12,9 @@ The local and CI builds described here are test builds only. They are tagged `lo
 | Tool | Version | Source | Pin owner |
 |---|---|---|---|
 | Alpine Linux | 3.24, index digest `sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a` | Docker Official Image | Renovate (`dockerfile`) |
-| CPython | 3.12.13 | uv managed distribution | Manual pull request (`PYTHON_VERSION` in the Containerfile) |
+| CPython | 3.12.15 | python-build-standalone `20261013`, musl `install_only_stripped`, SHA-256 verified; pip, ensurepip, IDLE and the test suite removed | Renovate (`custom.regex` on the release tag and checksum); the Python minor version changes only by a deliberate pull request |
 | uv | 0.11.19 | Alpine package | Manual (Renovate extraction of `apk` pins is not available) |
-| OpenTofu | 1.13.1 | GitHub release, SHA-256 verified | Renovate (`custom.regex`, version and checksum together) |
+| OpenTofu | 1.13.2 | GitHub release, SHA-256 verified | Renovate (`custom.regex`, version and checksum together) |
 | ansible-core (`ansible`, `ansible-galaxy`) | 2.21.5 | PyPI, hash-locked | Dependabot (`uv`, `/toolbox`) |
 | ansible-lint | 26.10.1 | PyPI, hash-locked | Dependabot |
 | Molecule | 26.10.0 | PyPI, hash-locked | Dependabot |
@@ -32,10 +32,11 @@ The local and CI builds described here are test builds only. They are tagged `lo
 The exact Python versions are the ones in `toolbox/uv.lock`; the smoke tests compare every tool's reported version with that
 lock, the Containerfile `apk` pins and the `ARG` values.
 
-Pin ages: Python packages, OpenTofu and the pins above were at least seven days old when chosen. `toolbox/pyproject.toml`
-sets `exclude-newer = "7 days"`, so every `uv lock` enforces the rule. Security fixes are exempt: `certifi` is excluded from
-that window, and the constraints copied from the collection (`packaging`, `asteval`, `virtualenv`) are security floors.
-OpenTofu 1.13.1 is one patch behind the collection's installer script (1.13.2) for the same reason.
+Pin ages: Python packages and the pins above were at least seven days old when chosen. Security fixes are exempt: OpenTofu
+1.13.2 and CPython 3.12.15 are security releases, and `certifi` and the constraints copied from the collection
+(`packaging`, `asteval`, `virtualenv`) are security floors with their reasons in `toolbox/pyproject.toml`. As in the
+collection, `exclude-newer` is not used: it would block Dependabot security updates for fresh releases.
+The image ships Alpine's uv 0.11.19 while CI uses uv 0.13.1; uv only exports the lock and installs wheels inside the build.
 
 ### Dependency ownership
 
@@ -43,11 +44,15 @@ OpenTofu 1.13.1 is one patch behind the collection's installer script (1.13.2) f
   changes only the lock; the Containerfile exports it during the build, so nothing else needs regenerating.
 - Renovate owns the base image digest (built-in `dockerfile` manager) and the OpenTofu version and checksum (`customManagers`
   in `.renovaterc.json`, datasource `github-release-attachments`, which also computes the new archive digest).
-  Validate with `npx --package renovate renovate-config-validator --strict --no-global`.
+  `make lint-renovate` (part of `make lint`) runs `renovate-config-validator --strict --no-global` with a pinned Renovate
+  version; it needs Node.js 24 and fails with a clear message otherwise. The 7-day `minimumReleaseAge` also applies to these
+  managers, so a security release of OpenTofu or CPython needs a manual pull request.
+- The python-build-standalone manager tracks the release tag and the archive digest. Its asset name contains the CPython
+  patch version, so when a newer release no longer carries 3.12.15 the bot cannot compute a digest and a maintainer updates
+  `PYTHON_VERSION` and the checksum by hand from the release `SHA256SUMS`.
 - `apk` pins are not updated by any bot yet (planned). Renovate's `dockerfile` manager reads `apk add name=version` pins
   but, in the version tested (44.181.5), marks them skipped at extraction with `unknown-registry`, so no custom manager can
   revive them from configuration alone. Bump them by hand when a build reports a missing package version.
-- The managed Python version is changed only by a deliberate pull request, as for the rest of the platform.
 
 Bump the OpenTofu checksum from the project's `tofu_<version>_SHA256SUMS` (linux_amd64 line) and compare it with the signed release.
 Regenerate the Python lock with:
@@ -62,7 +67,7 @@ make lint-container
 - Multi-stage build; the final stage has no compilers, package caches, `curl` or build tooling.
 - Base image pinned by digest; `apk add` with exact versions; no `apk upgrade`.
 - Python tools installed with `--require-hashes --only-binary :all:` from the locked export.
-- OpenTofu verified against a pinned SHA-256 before extraction; the build fails on non-amd64 builders.
+- OpenTofu and CPython are verified against pinned SHA-256 values before extraction; the build fails on non-amd64 builders.
 - User `toolbox`, UID and GID 10001, `WORKDIR /work`. No `ENTRYPOINT`, no exposed ports.
 - No SSH daemon (the OpenSSH client only). setuid and setgid bits are stripped from every file in the image.
 - Installed trees under `/opt` are root-owned and not writable by the runtime user.
@@ -71,8 +76,9 @@ make lint-container
   `/home/toolbox`, and the checkout at `/work`.
 - No credentials, build secrets or tokens. The OCI labels carry source, licence, version and revision only.
 - OCI labels: title, description, source, url, documentation, licenses, vendor, base name, version, revision, created.
-  `version`, `revision` and `created` default to `0.0.0-dev`, `unknown`, `unknown` and are set with `--build-arg`
-  (`IMAGE_VERSION`, `VCS_REF`, `BUILD_DATE`); `make image-smoke` sets the revision.
+  `version`, `revision` and `created` default to `0.0.0-dev`, `unknown` and `1970-01-01T00:00:00Z` and are set with
+  `--build-arg` (`IMAGE_VERSION`, `VCS_REF`, `BUILD_DATE`); `make image-smoke` sets the revision and derives the date from
+  `SOURCE_DATE_EPOCH` (default: the commit time).
 
 ## Variants
 
@@ -105,8 +111,26 @@ The `container` job in `.github/workflows/ci.yml` runs `make lint-container` and
 
 ## Image size
 
-The test build measured with Docker 29 on 2026-10-25: about 277 MB as stored by the engine and about 940 MB uncompressed
-(the Python environment is roughly 590 MB, mostly Checkov and its dependencies; OpenTofu 114 MB; CPython 90 MB; Alpine packages 144 MB).
+The test build measured with Docker 29 on 2026-10-25: about 267 MB as stored by the engine and about 893 MB uncompressed
+(the Python environment is roughly 564 MB, mostly Checkov and its dependencies; OpenTofu 114 MB; CPython 72 MB; Alpine packages 144 MB).
+
+## Vulnerability exceptions
+
+[`security/vulnerability-exceptions.yaml`](../security/vulnerability-exceptions.yaml) is the machine-readable list a later Grype
+gate (FREES-37) consumes. Each entry has the ID, component, severity, justification, owner, Jira issue, creation date and an
+expiry no later than 90 days out; a unit test fails when an entry is incomplete, too long-lived or expired.
+Grype 0.120.1 (checksum verified, database built 2026-10-25) on the test build reports no fixable critical or high finding
+except these, none of which can be fixed in this repository yet:
+
+| ID | Component | Severity | Why accepted | Expires |
+|---|---|---|---|---|
+| GO-2026-6612 | `golang.org/x/net` v0.57.0 inside OpenTofu 1.13.2 (fixed in 0.60.0) | critical | No OpenTofu release includes the fix; the toolbox runs tofu as a short-lived client only | 2027-01-23 |
+| GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6617 | same module | high | same | 2027-01-23 |
+| GHSA-2v4p-qf9q-27wj | `google.golang.org/grpc` v1.83.1 inside OpenTofu 1.13.2 (fixed in 1.83.2) | high | same | 2027-01-23 |
+| GHSA-wj6h-64fc-37mp | `ecdsa` 0.19.2, transitive of Checkov | high | No fixed release exists; Checkov uses only signature verification, the attack targets signing; mirrors the collection's entry | 2027-01-23 |
+
+Owner: lead architect (OpenTofu entries, FREES-37) and project owner (`ecdsa`, FREES-82). Re-check whenever a new OpenTofu
+release appears and re-run the OSV query over `toolbox/uv.lock` before the expiry.
 
 ## Known limits
 

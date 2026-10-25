@@ -26,7 +26,11 @@ dependencies = [
 
 [tool.uv]
 package = false
-exclude-newer = "7 days"
-exclude-newer-package = { certifi = false }
 override-dependencies = ["packaging>=26.3", "asteval>=1.0.10"]
 constraint-dependencies = ["virtualenv>=21.14.13", "certifi>=2026.10.19"]
+
+[tool.freesecdev.lint-justifications]
+"uv override packaging>=26.3" = "Checkov 3.3.29 declares packaging<24.0, which forces virtualenv 21.14.5 (12 advisories, five HIGH). packaging is a pure version and specifier parser; Checkov only uses it for version comparison. virtualenv 21.14.13 itself requires packaging>=26.3."
+"uv override asteval>=1.0.10" = "Checkov pins asteval==1.0.6, which has two sandbox escape advisories (GHSA-89v8-rhwq-hf77, GHSA-9w56-46f6-3qhx) fixed in 1.0.9. A security fix is exempt from the seven-day release age rule."
+"uv constraint virtualenv>=21.14.13" = "Versions 21.14.5 to 21.14.12 are affected by advisories; the lowest clean release is 21.14.13. A security fix is exempt from the seven-day release age rule."
+"uv constraint certifi>=2026.10.19" = "certifi before 2026.10.19 trusts compromised emSign intermediates (GHSA-6q48-6c7w-9gw2, CRITICAL). A security fix is exempt from the seven-day release age rule."
