@@ -1,0 +1,4 @@
+*
+!Containerfile
+!toolbox/pyproject.toml
+!toolbox/uv.lock

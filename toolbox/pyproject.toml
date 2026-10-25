@@ -1,0 +1,32 @@
+[project]
+name = "freesecdev-linux-compliance-toolbox"
+version = "0.0.0"
+description = "Python tools bundled in the linux-compliance-runner CI toolbox image"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ansible-core==2.21.5",
+    "ansible-lint==26.10.1",
+    "antsibull-changelog==0.35.2",
+    "bandit==1.9.4",
+    "checkov==3.3.29",
+    "coverage==7.16.2",
+    "hadolint-bin==2.15.1",
+    "molecule==26.10.0",
+    "mypy==2.4.0",
+    "pylint==4.1.3",
+    "pyright==1.1.414",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pyyaml==6.0.3",
+    "ruff==0.17.1",
+    "types-pyyaml==6.0.12.20260906",
+    "yamllint==1.38.0",
+    "zizmor==1.31.1",
+]
+
+[tool.uv]
+package = false
+exclude-newer = "7 days"
+exclude-newer-package = { certifi = false }
+override-dependencies = ["packaging>=26.3", "asteval>=1.0.10"]
+constraint-dependencies = ["virtualenv>=21.14.13", "certifi>=2026.10.19"]
