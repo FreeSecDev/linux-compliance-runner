@@ -1,0 +1,6 @@
+linux-compliance-runner
+Copyright 2026 The FreeSecDev contributors
+
+This product is licensed under the Apache License, Version 2.0.
+The published image contains third-party packages under their own licences; the SBOM published with every image
+release lists each component and its licence.
