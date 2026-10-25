@@ -16,6 +16,7 @@
 | Security fixes for images, apk pins, hooks, providers | Renovate schedule (documented residual risk) |
 | OpenTofu and python-build-standalone release versions and checksums in the `Containerfile` | Renovate (`customManagers` regex) |
 | Python tools in the toolbox image (`toolbox/uv.lock`) | Dependabot |
+| Grype version and checksum in the `Makefile` | Renovate (`customManagers` regex) |
 | Packer plugins, Ansible Galaxy requirements | Not used in this repository |
 
 Renovate Python managers stay disabled, and Renovate also disables the `pypi` and `python-version` datasources and
@@ -35,8 +36,9 @@ A fixable critical or high finding blocks release.
 
 ## Ignore entry format
 
-Each entry records: finding ID, affected component, justification, owner, Jira issue,
-created date and an expiry date no later than 90 days out. CI fails on expired entries.
+Each entry records: finding ID, the package name and version as the scanner reports them, affected
+component, severity, justification, owner, Jira issue, created date and an expiry date no later than
+90 days after the created date and after today. CI fails on expired, stale or malformed entries.
 
 ## Pull request body template
 

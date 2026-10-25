@@ -25,6 +25,8 @@ The configuration files are committed, but the bots are not confirmed active:
 | Alpine `apk` package pins in the `Containerfile` | Manual (Renovate planned) | Renovate's `dockerfile` manager reads the pins but skips them at extraction (`unknown-registry`), so no bot updates them yet; a build that reports a missing version is fixed by a pull request that bumps the pin. See [`image.md`](image.md) |
 | OpenTofu version and archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource updates version and checksum together |
 | python-build-standalone release and CPython archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource; the toolbox's CPython minor version still changes only by a deliberate pull request |
+| Grype version and linux/amd64 archive SHA-256 in the `Makefile` (`GRYPE_VERSION`, `GRYPE_SHA256_LINUX_AMD64`) | Renovate | `customManagers` regex with the `github-release-attachments` datasource, which reads the new digest from the release `checksums.txt`; grouped as `image scanner` |
+| Grype vulnerability database | Not pinned (fetched per scan) | Rebuilt daily and unsigned; `make image-scan` verifies the archive SHA-256 against the listing and fails when the database is older than 120 hours. See [`image.md`](image.md#vulnerability-gate) |
 | Python tools in the toolbox image (`toolbox/pyproject.toml`, `toolbox/uv.lock`) | Dependabot | A second `uv` entry for `/toolbox`; the Containerfile exports the lock during the build |
 | pre-commit hooks | Renovate | Hooks are pinned by revision |
 | Terraform and OpenTofu providers | Renovate | Provider lock handling and version constraints |
@@ -73,10 +75,12 @@ A new ecosystem must be assigned to exactly one bot in this table in the same pu
 GitHub's dependency graph does not cover container images, `apk` packages, pre-commit hooks or OpenTofu
 providers, and Renovate's own vulnerability alerts are disabled to avoid competing security pull
 requests. A security fix in one of these ecosystems therefore arrives with the next weekly Renovate run, after the
-7-day (or 14-day for majors) release age. Image and dependency scanning with Grype (ADR 0006) is planned (image scanning FREES-37) and is not active yet. Once active it will fail a build on a fixable critical or high finding in container
-images and Python dependencies, and the response targets below then require a manual update pull request. It will
-not cover pre-commit hooks or OpenTofu providers; for those, fixes arrive only
-through the Renovate schedule unless a maintainer acts on an advisory. Revisit this if Renovate's OSV-based alerts can be scoped to these ecosystems without overlapping
+7-day (or 14-day for majors) release age. The Grype image gate (`make image-scan`, FREES-37, ADR 0006) narrows this gap for
+the image: the CI `container` job fails on every unlisted critical or high finding in the toolbox image, including its `apk`
+packages, the Python environment and the Go modules compiled into OpenTofu, with a vulnerability database at most 120 hours
+old. The response targets below then require a manual update pull request or a documented exception. The gate does not cover
+pre-commit hooks or OpenTofu providers; for those, fixes arrive only through the Renovate schedule unless a maintainer acts on
+an advisory. Revisit this if Renovate's OSV-based alerts can be scoped to these ecosystems without overlapping
 Dependabot. Tracked on FREES-81.
 
 ## Vulnerability response targets
@@ -96,12 +100,15 @@ no later than 90 days out. The authoritative tables are in
 
 - [ADR 0005](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0005-renovate-version-annotations.md), [ADR 0006](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0006-toolchain-selection.md)
 - [`SECURITY.md`](../SECURITY.md) for reporting vulnerabilities
-- Jira: FREES-81 (dependency configuration), FREES-35 (Containerfile, toolbox lock and binary pin managers)
+- Jira: FREES-81 (dependency configuration), FREES-35 (Containerfile, toolbox lock and binary pin managers), FREES-37 (Grype gate)
 
 ## Vulnerability exceptions
 
 Accepted findings are recorded in [`security/vulnerability-exceptions.yaml`](../security/vulnerability-exceptions.yaml)
-with finding ID, component, severity, justification, owner, Jira issue, creation date and an expiry at most 90 days out.
-A unit test fails on incomplete, over-long or expired entries. Current entries (all created 2026-10-25, expiring
-2027-01-23): the `golang.org/x/net` and `grpc` findings compiled into OpenTofu 1.13.2 (FREES-37; no OpenTofu release
-includes the fixes yet) and `ecdsa` 0.19.2 (FREES-82; no fixed release exists). Details are in [`image.md`](image.md).
+(format 2) with the finding ID, the package name and version exactly as Grype reports them, a component description,
+severity, justification, owner, Jira issue, creation date and an expiry at most 90 days after both the creation date and
+today. One validator (`tools/security/vulnerability_exceptions.py`) serves the unit test and the Grype gate; the gate matches
+findings on ID, package and version together and fails on unlisted critical or high findings, stale or expired entries, a
+changed severity and any schema violation. Current entries (all created 2026-10-25, expiring 2027-01-23): the
+`golang.org/x/net` and `grpc` findings compiled into OpenTofu 1.13.2 (FREES-37; no OpenTofu release includes the fixes yet)
+and `ecdsa` 0.19.2 (FREES-82; no fixed release exists). Details are in [`image.md`](image.md#vulnerability-gate).
