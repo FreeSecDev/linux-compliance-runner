@@ -5,12 +5,15 @@ The gate reads the Grype JSON report of the image and the exceptions file
 
 * the exceptions file breaks the schema, or an entry has expired
   (validated by :mod:`tools.security.vulnerability_exceptions`);
-* a critical or high finding is not listed, where a listing matches on
-  vulnerability ID, package name and package version together;
+* a critical, high or unknown-severity finding is not listed, where a listing
+  matches on vulnerability ID, package name and package version together;
 * a listed entry matches no reported finding (a stale entry);
 * a listed finding is now reported with a different severity;
 * the report is malformed, comes from another Grype version, describes another
-  image or distribution, or was produced with a setting that hides findings;
+  image, distribution or distribution release, has ignored matches, or its
+  effective Grype configuration differs in any way from the committed expected
+  configuration (``security/grype-expected-config.json``) outside the fields
+  listed in :data:`VARIABLE_FIELDS`, including any new or unknown setting;
 * the vulnerability database is invalid, has another schema, was built in the
   future or is older than the allowed age.
 
@@ -36,7 +39,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
 DESCRIPTION: Final[str] = "Fail-closed vulnerability gate over a Grype JSON report."
-GATED_SEVERITIES: Final[frozenset[str]] = frozenset({"critical", "high"})
+GATED_SEVERITIES: Final[frozenset[str]] = frozenset({"critical", "high", "unknown"})
 GRYPE_SEVERITIES: Final[tuple[str, ...]] = (
     "critical",
     "high",
@@ -45,19 +48,19 @@ GRYPE_SEVERITIES: Final[tuple[str, ...]] = (
     "negligible",
     "unknown",
 )
-SUPPRESSION_SETTINGS: Final[tuple[tuple[str, object], ...]] = (
-    ("only-fixed", False),
-    ("only-notfixed", False),
-    ("ignore-wontfix", ""),
-    ("exclude", []),
-    ("vex-documents", []),
-    ("vex-add", []),
-)
+VARIABLE_FIELDS: Final[dict[str, str]] = {
+    "db.cache-dir": (
+        "absolute path of the database cache inside the checkout; the database itself is "
+        "checked through descriptor.db.status"
+    ),
+    "file": "path the report was written to; it does not influence matching",
+}
+DERIVED_MAX_AGE_FIELD: Final[tuple[str, str]] = ("db", "max-allowed-built-age")
+NANOSECONDS_PER_SECOND: Final[int] = 1_000_000_000
 CLOCK_SKEW: Final[timedelta] = timedelta(minutes=5)
 DIGEST: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}")
 MARKDOWN_SPECIAL: Final[re.Pattern[str]] = re.compile(r"([\\`*_\[\]<>#|~])")
 LINE_BREAKS: Final[re.Pattern[str]] = re.compile(r"\s+")
-MISSING: Final[object] = object()
 
 
 class ReportError(ValueError):
@@ -102,10 +105,11 @@ class ScanReport:
     grype_version: str
     image: str
     image_digests: frozenset[str]
-    distro: str
+    distro: tuple[str, str]
     db_schema: str
     db_built: datetime
     db_valid: bool
+    configuration: dict[str, object]
     suppressions: tuple[str, ...]
     findings: tuple[Finding, ...]
 
@@ -118,7 +122,8 @@ class GateSettings:
     db_schema: int
     max_db_age: timedelta
     image_id: str
-    distro: str
+    distro: tuple[str, str]
+    expected_configuration: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,23 +205,81 @@ def parse_finding(value: object, where: str) -> Finding:
     )
 
 
-def _same(value: object, expected: object) -> bool:
-    """Return whether ``value`` equals ``expected`` and has exactly its type."""
-    return type(value) is type(expected) and value == expected
-
-
-def _suppressions(report: Mapping[str, object], configuration: Mapping[str, object]) -> list[str]:
-    """Describe every report setting or section that hides findings."""
-    found = [
-        f"Grype setting {name} is {configuration.get(name, '<missing>')!r}, expected {expected!r}"
-        for name, expected in SUPPRESSION_SETTINGS
-        if not _same(configuration.get(name, MISSING), expected)
-    ]
+def _ignored_matches(report: Mapping[str, object]) -> list[str]:
+    """Describe ignored matches; the gate allows no ignore rule to take effect."""
     ignored = report.get("ignoredMatches", [])
-    if ignored != []:
-        count = len(cast("list[object]", ignored)) if isinstance(ignored, list) else "?"
-        found.append(f"the report has {count} ignored match(es); the gate allows no ignore rules")
-    return found
+    if ignored == []:
+        return []
+    count = len(cast("list[object]", ignored)) if isinstance(ignored, list) else "?"
+    return [f"the report has {count} ignored match(es); the gate allows no ignore rules"]
+
+
+def _json(value: object) -> str:
+    """Render a configuration value as compact JSON for a failure message."""
+    return json.dumps(value, sort_keys=True)
+
+
+def _object_differences(actual: object, expected: dict[str, object], path: str) -> list[str]:
+    """Compare two JSON objects key by key."""
+    if not isinstance(actual, dict):
+        return [f"{path or '<root>'}: expected an object, got {_json(actual)}"]
+    found = cast("dict[str, object]", actual)
+    differences: list[str] = []
+    for key in sorted(set(expected) | set(found)):
+        child = f"{path}.{key}" if path else key
+        if key not in found:
+            differences.append(f"{child} is missing")
+        elif key not in expected:
+            differences.append(f"{child} is a new or unknown setting ({_json(found[key])})")
+        else:
+            differences.extend(configuration_differences(found[key], expected[key], child))
+    return differences
+
+
+def _list_differences(actual: object, expected: list[object], path: str) -> list[str]:
+    """Compare two JSON arrays element by element."""
+    shown = _json(actual)
+    items = cast("list[object]", actual) if isinstance(actual, list) else None
+    if items is None or len(items) != len(expected):
+        return [f"{path}: expected {_json(expected)}, got {shown}"]
+    differences: list[str] = []
+    for index, (value, wanted) in enumerate(zip(items, expected, strict=True)):
+        differences.extend(configuration_differences(value, wanted, f"{path}[{index}]"))
+    return differences
+
+
+def configuration_differences(actual: object, expected: object, path: str = "") -> list[str]:
+    """Return every difference between the effective and the expected configuration.
+
+    Objects must have exactly the same keys, arrays the same length and scalars
+    the same type and value. Fields in :data:`VARIABLE_FIELDS` only need to be
+    non-empty strings.
+    """
+    if path in VARIABLE_FIELDS:
+        if isinstance(actual, str) and actual:
+            return []
+        return [f"{path} must be a non-empty string, got {_json(actual)}"]
+    if isinstance(expected, dict):
+        return _object_differences(actual, cast("dict[str, object]", expected), path)
+    if isinstance(expected, list):
+        return _list_differences(actual, cast("list[object]", expected), path)
+    if type(actual) is not type(expected) or actual != expected:
+        return [f"{path}: expected {_json(expected)}, got {_json(actual)}"]
+    return []
+
+
+def expected_configuration_for(
+    expected: Mapping[str, object], max_db_age: timedelta
+) -> dict[str, object]:
+    """Return a copy of the expected configuration with the database age limit filled in."""
+    result = cast("dict[str, object]", json.loads(json.dumps(expected)))
+    section, key = DERIVED_MAX_AGE_FIELD
+    database = result.get(section)
+    if isinstance(database, dict):
+        cast("dict[str, object]", database)[key] = (
+            int(max_db_age.total_seconds()) * NANOSECONDS_PER_SECOND
+        )
+    return result
 
 
 def _image_digests(target: Mapping[str, object]) -> frozenset[str]:
@@ -270,11 +333,12 @@ def parse_report(document: object) -> ScanReport:
         grype_version=_string(descriptor, "version", "descriptor"),
         image=_string(target, "userInput", "source.target"),
         image_digests=_image_digests(target),
-        distro=_string(distro, "name", "distro"),
+        distro=(_string(distro, "name", "distro"), _string(distro, "version", "distro")),
         db_schema=_string(status, "schemaVersion", "descriptor.db.status"),
         db_built=_db_built(status),
         db_valid=valid,
-        suppressions=tuple(_suppressions(report, configuration)),
+        configuration=configuration,
+        suppressions=tuple(_ignored_matches(report)),
         findings=tuple(
             parse_finding(item, f"matches[{index}]")
             for index, item in enumerate(_array(report, "matches", "report"))
@@ -293,23 +357,40 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return result
 
 
+def load_json(path: Path, what: str) -> object:
+    """Read the JSON document at ``path``, rejecting duplicate keys.
+
+    Raises:
+        ReportError: the file cannot be read or is not valid JSON.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        message = f"cannot read the {what} {path}: {error}"
+        raise ReportError(message) from error
+    try:
+        return cast("object", json.loads(text, object_pairs_hook=_reject_duplicate_keys))
+    except json.JSONDecodeError as error:
+        message = f"the {what} {path} is not valid JSON: {error}"
+        raise ReportError(message) from error
+
+
 def load_report(path: Path) -> ScanReport:
     """Read and parse the Grype JSON report at ``path``.
 
     Raises:
         ReportError: the file cannot be read, is not JSON or is malformed.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        message = f"cannot read the Grype report {path}: {error}"
-        raise ReportError(message) from error
-    try:
-        document = cast("object", json.loads(text, object_pairs_hook=_reject_duplicate_keys))
-    except json.JSONDecodeError as error:
-        message = f"the Grype report {path} is not valid JSON: {error}"
-        raise ReportError(message) from error
-    return parse_report(document)
+    return parse_report(load_json(path, "Grype report"))
+
+
+def load_expected_configuration(path: Path) -> dict[str, object]:
+    """Read the committed expected Grype configuration at ``path``.
+
+    Raises:
+        ReportError: the file cannot be read, is not JSON or is not an object.
+    """
+    return _object(load_json(path, "expected Grype configuration"), "expected configuration")
 
 
 def provenance_failures(report: ScanReport, settings: GateSettings, now: datetime) -> list[str]:
@@ -324,9 +405,17 @@ def provenance_failures(report: ScanReport, settings: GateSettings, now: datetim
         failures.append(f"report does not describe the image {settings.image_id}")
     if report.distro != settings.distro:
         failures.append(
-            f"report detected distribution {report.distro!r}, expected {settings.distro!r}"
+            f"report detected distribution {' '.join(report.distro)!r}, "
+            f"expected {' '.join(settings.distro)!r}"
         )
     failures.extend(report.suppressions)
+    failures.extend(
+        f"Grype configuration differs from the expected configuration: {difference}"
+        for difference in configuration_differences(
+            report.configuration,
+            expected_configuration_for(settings.expected_configuration, settings.max_db_age),
+        )
+    )
     if not report.db_valid:
         failures.append("Grype reports the vulnerability database as invalid")
     if re.fullmatch(rf"v{settings.db_schema}\.[0-9]+\.[0-9]+", report.db_schema) is None:
@@ -438,7 +527,7 @@ def render_summary(
         lines.extend(
             [
                 f"| Scanned image | {_cell(report.image)} |",
-                f"| Distribution | {_cell(report.distro)} |",
+                f"| Distribution | {_cell(' '.join(report.distro))} |",
                 f"| Grype | {_cell(report.grype_version)} |",
                 (
                     f"| Vulnerability database | schema {_cell(report.db_schema)}, built "
@@ -471,22 +560,31 @@ def render_summary(
     return "\n".join(lines) + "\n"
 
 
-def run(arguments: argparse.Namespace, now: datetime) -> tuple[Decision, str]:
-    """Run the gate for parsed command-line arguments."""
-    settings = GateSettings(
+def _settings(arguments: argparse.Namespace, expected: dict[str, object]) -> GateSettings:
+    """Build the gate settings from the command line and the expected configuration."""
+    return GateSettings(
         grype_version=arguments.grype_version,
         db_schema=arguments.db_schema,
         max_db_age=timedelta(hours=arguments.max_db_age_hours),
         image_id=arguments.image_id,
-        distro=arguments.distro,
+        distro=(arguments.distro, arguments.distro_version),
+        expected_configuration=expected,
     )
+
+
+def run(arguments: argparse.Namespace, now: datetime) -> tuple[Decision, str]:
+    """Run the gate for parsed command-line arguments."""
     exceptions, problems = validate_file(arguments.exceptions, now.astimezone(UTC).date())
     exception_failures = [f"exceptions file: {problem}" for problem in problems]
+    expected: dict[str, object] = {}
     try:
+        expected = load_expected_configuration(arguments.expected_config)
         report = load_report(arguments.report)
     except ReportError as error:
-        decision = Decision(failures=(*exception_failures, f"Grype report: {error}"))
+        settings = _settings(arguments, expected)
+        decision = Decision(failures=(*exception_failures, f"input: {error}"))
         return decision, render_summary(decision, None, settings, now)
+    settings = _settings(arguments, expected)
     evaluated = evaluate(report, exceptions, settings, now)
     decision = Decision(
         failures=(*exception_failures, *evaluated.failures), accepted=evaluated.accepted
@@ -520,6 +618,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--image-id", required=True, help="Image ID or digest that was scanned.")
     parser.add_argument("--distro", required=True, help="Expected distribution name.")
+    parser.add_argument(
+        "--distro-version", required=True, help="Expected distribution release of the image."
+    )
+    parser.add_argument(
+        "--expected-config",
+        type=Path,
+        required=True,
+        help="Committed expected Grype configuration (JSON).",
+    )
     return parser
 
 

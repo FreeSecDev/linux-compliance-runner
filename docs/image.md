@@ -134,7 +134,8 @@ make image-scan
 `make image-scan` scans an image that already exists in the local engine (`SCAN_IMAGE`, default the smoke tag, so run
 `make image-smoke` first) and fails closed. It needs `docker` or `podman`, `uv`, `curl`, `jq`, `sha256sum` and network access.
 
-1. **Scanner.** Grype `GRYPE_VERSION` (0.120.1) is downloaded from the GitHub release into `build/tools/grype-<version>/`.
+1. **Scanner.** Grype `GRYPE_VERSION` (0.121.0, a security release; see
+   [`dependency-management.md`](dependency-management.md#grype-version)) is downloaded from the GitHub release into `build/tools/grype-<version>/`.
    The SHA-256 pinned in the Makefile (`GRYPE_SHA256_LINUX_AMD64`) must appear verbatim in the release `checksums.txt` and must
    match the archive; nothing is piped into a shell. The binary must report the pinned version and database schema. linux/amd64
    only. The release also carries a Sigstore bundle for `checksums.txt`; it is not verified yet because the toolchain has no
@@ -150,26 +151,44 @@ make image-scan
 3. **Database age.** Grype refuses a database older than `GRYPE_DB_MAX_AGE_HOURS` (120 hours) through `validate-age`, and the
    gate checks the build time recorded in the report again: older than 120 hours, or more than five minutes in the future,
    fails the gate, so a stale database cannot produce a false pass.
-4. **Configuration.** Grype runs with `--config security/grype.yaml`. Passing a config file stops Grype from also reading a
-   `.grype.yaml` from the working or home directory, which could otherwise add ignore rules. The gate still checks the effective
-   configuration recorded in the report, because `GRYPE_*` environment variables override the file.
+4. **Configuration and environment.** Grype runs with `--config security/grype.yaml`. Passing a config file stops Grype
+   from also reading a `.grype.yaml` from the working or home directory. Every Grype command runs under `env -i`, so no
+   inherited `GRYPE_*` variable (for example `GRYPE_MATCH_STOCK_USING_CPES=false`, `GRYPE_DISTRO` or `GRYPE_ONLY_FIXED`) reaches
+   it. Only these variables are passed: `PATH`, `HOME`, `TMPDIR`, the container engine connection (`DOCKER_HOST`,
+   `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, and `CONTAINER_HOST` and `XDG_RUNTIME_DIR` for
+   podman; an unset one is passed empty, which the clients treat as unset), plus `GRYPE_DB_CACHE_DIR` and
+   `GRYPE_DB_MAX_ALLOWED_BUILT_AGE` set by the Makefile. No proxy variable is passed: the scan itself makes no network request,
+   because the database was imported beforehand and update checks are off.
+   The gate then compares the whole effective configuration recorded in the report (`descriptor.configuration`) with the
+   committed [`security/grype-expected-config.json`](../security/grype-expected-config.json): objects must have exactly the same
+   keys, arrays the same length, and scalars the same type and value. Any difference fails, and so does a missing key or a new
+   or unknown one, which makes a Grype upgrade that adds settings fail until the file is reviewed. Only these fields may vary:
+   - `db.cache-dir`: the absolute path of the database cache in the checkout; it differs per machine and does not choose the
+     database, whose schema, build time and validity are checked through `descriptor.db.status`;
+   - `file`: the path the report was written to; it does not influence matching.
+
+   Both must still be non-empty strings. `db.max-allowed-built-age` is not free either: it must equal
+   `GRYPE_DB_MAX_AGE_HOURS` in nanoseconds. After a Grype bump, run `make image-scan` (it fails on the new configuration), then
+   `make grype-expected-config` to rewrite the file from that report, and review every changed setting in the pull request.
 5. **Gate.** `tools/security/grype_gate.py` reads the Grype JSON report and `security/vulnerability-exceptions.yaml` and fails on:
    - any schema violation or expired entry in the exceptions file (the shared validator below);
-   - any critical or high finding that no entry lists. A listing matches only when the vulnerability ID, the package name and
+   - any critical, high or unknown-severity finding that no entry lists (an unrated finding can be a critical one). A listing matches only when the vulnerability ID, the package name and
      the package version all equal Grype's `vulnerability.id`, `artifact.name` and `artifact.version`, so an ID listed for one
      package never covers another package or another version;
    - a stale entry: a listing that matches no reported finding of any severity;
    - a listed finding that Grype now reports with a different severity;
    - a report from another Grype version, for another image (the image ID or digest taken from the engine before the scan
-     must appear in the report), for another distribution than `alpine`, or one that is malformed;
-   - a setting that hides findings (`only-fixed`, `only-notfixed`, `ignore-wontfix`, `exclude`, VEX documents) or any ignored
-     match in the report;
+     must appear in the report), or one that is malformed;
+   - a distribution other than `alpine` at the release read from the image's own `/etc/alpine-release` (the target also
+     requires that release to belong to the pinned base image minor, `alpine:3.24`), so a distribution override cannot pass;
+   - any configuration difference described above, and any ignored match in the report;
    - an invalid database, a schema other than v6, or the age limits above.
 
-   Medium, low, negligible and unknown findings without an entry are counted in the summary but do not fail the gate. Unfixed
-   critical and high findings are not exempt: they need an entry like any other.
+   Medium, low and negligible findings without an entry are counted in the summary but do not fail the gate. Unfixed
+   critical, high and unknown findings are not exempt: they need an entry like any other.
 6. **Reports.** `build/image-scan/` holds `grype.json` (the full Grype report), `summary.md` (the gate verdict, the database and
-   finding counts, every failure and the accepted findings), `db-listing.json`, `db-status.json` and `image-id.txt`. In CI the
+   finding counts, every failure and the accepted findings), `db-listing.json`, `db-status.json`, `image-id.txt` and
+   `alpine-release.txt`. In CI the
    summary is added to the job summary and the directory is uploaded as the `image-scan` artifact (kept 30 days), also when the
    gate fails.
 
@@ -177,8 +196,12 @@ Network dependency: the target needs `github.com` (and its release download host
 `grype.anchore.io` for the listing on every run and for each new database archive. Without network access it fails; it never
 falls back to an unverified or older database.
 
-On the test build of 2026-10-25 (database built 2026-10-25T06:27:34Z) the gate passes: Grype reports 18 findings (1 critical,
-6 high, 10 medium, 1 negligible), and the critical and high ones are exactly the seven listed exceptions below.
+On the test build of 2026-10-25 (Grype 0.121.0, Alpine 3.24.3, database built 2026-10-25T06:27:34Z) the gate passes: Grype
+reports 18 findings (1 critical, 6 high, 10 medium, 1 negligible, no unknown), and the critical and high ones are exactly the
+seven listed exceptions below. Run with `GRYPE_MATCH_STOCK_USING_CPES=false`, `GRYPE_DISTRO=alpine:3.10` or
+`GRYPE_ONLY_FIXED=true` in the environment, `make image-scan` still reports the same 18 findings and passes, because the
+variables are scrubbed. A report produced with those variables, bypassing the Makefile, fails the gate on the configuration
+comparison (and, for the distribution override, on the release check).
 
 ## Vulnerability exceptions
 
@@ -190,7 +213,7 @@ consumes. `tools/security/vulnerability_exceptions.py` is the single validator, 
 - each entry has exactly `id`, `package`, `version`, `component`, `severity`, `justification`, `owner`, `jira`, `created` and
   `expires`, every value a non-empty string without leading or trailing whitespace (quote dates and versions);
 - `id`, `package` and `version` are copied from the Grype report; `component` is the human description;
-- `severity` is `critical`, `high`, `medium` or `low` and must equal the reported severity;
+- `severity` is `critical`, `high`, `medium`, `low` or `unknown` and must equal the reported severity;
 - `jira` matches `FREES-[0-9]+` in full (ASCII digits, no trailing newline);
 - `created` and `expires` are `YYYY-MM-DD` dates with `created <= today < expires`, `expires <= created + 90 days` and
   `expires <= today + 90 days`, so a back-dated entry cannot be renewed by editing `expires` alone;

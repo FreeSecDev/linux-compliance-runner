@@ -51,6 +51,7 @@ PyPI package, so no separate install is needed.
 | `aws-bootstrap` | pending FREES-33 | AWS bootstrap |
 | `image-build` | pending FREES-36 | Runner image build on AWS |
 | `image-scan` | implemented | Scans the local test image (`SCAN_IMAGE`, default the smoke tag; run `make image-smoke` first) with the pinned, checksum-verified Grype and a freshly verified vulnerability database, then applies the fail-closed exception gate `tools/security/grype_gate.py`; reports land in `build/image-scan/`. See [`image.md`](image.md#vulnerability-gate) |
+| `grype-expected-config` | implemented | Rewrites `security/grype-expected-config.json` from the last `make image-scan` report (variable fields blanked); used after a Grype bump, and the diff is reviewed |
 | `sbom` | pending FREES-37 | Image SBOM |
 | `sign` | pending FREES-37 | Image signature and SBOM attestation |
 | `image-smoke` | implemented | Builds `localhost/linux-compliance-runner:smoke` locally with docker or podman (never pushed) and runs `tests/smoke` against it read-only, as UID 10001, without capabilities or network; see [`image.md`](image.md) |

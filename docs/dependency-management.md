@@ -70,6 +70,18 @@ A new ecosystem must be assigned to exactly one bot in this table in the same pu
   provenance, new maintainers and licence changes, and confirm that an action or image digest matches its release.
 - Hash-locked files are regenerated, never edited by hand.
 
+### Grype version
+
+`make image-scan` pins Grype 0.121.0, published 2026-10-19, before the 7-day release age had passed. It is treated as a
+security release and is exempt from the wait, as OpenTofu 1.13.2, CPython 3.12.15 and Node.js 24.22.1 were. Its release notes
+list five remediated vulnerabilities in Grype's own `golang.org/x/net`: GO-2026-6612 (critical) and GO-2026-6603,
+GO-2026-6610, GO-2026-6611 and GO-2026-6617 (high), the same advisories accepted for OpenTofu. Grype uses that module for its network code, and the scanner runs on
+every pull request. The archive SHA-256 `64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519` was checked against
+`grype_0.121.0_checksums.txt` and a fresh download, and the binary reports database schema 6.
+A Grype bump changes the effective scanner configuration that the gate compares, so a Renovate pull request for Grype also
+needs `security/grype-expected-config.json` regenerated with `make grype-expected-config` and reviewed; until then the gate
+fails, by design.
+
 ## Residual risk
 
 GitHub's dependency graph does not cover container images, `apk` packages, pre-commit hooks or OpenTofu

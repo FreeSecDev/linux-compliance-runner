@@ -8,8 +8,8 @@ UV := $(shell command -v uv 2>/dev/null)
 RUN := uv run --frozen
 RENOVATE_VERSION := 44.167.5
 SMOKE_IMAGE := localhost/linux-compliance-runner:smoke
-GRYPE_VERSION := 0.120.1
-GRYPE_SHA256_LINUX_AMD64 := 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
+GRYPE_VERSION := 0.121.0
+GRYPE_SHA256_LINUX_AMD64 := 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
 GRYPE_DB_SCHEMA := 6
 GRYPE_DB_MAX_AGE_HOURS := 120
 GRYPE_DB_URL := https://grype.anchore.io/databases/v$(GRYPE_DB_SCHEMA)
@@ -18,9 +18,14 @@ GRYPE_ARCHIVE := grype_$(GRYPE_VERSION)_linux_amd64.tar.gz
 GRYPE_DIR := build/tools/grype-$(GRYPE_VERSION)
 GRYPE := $(GRYPE_DIR)/grype
 GRYPE_CONFIG := security/grype.yaml
+GRYPE_EXPECTED_CONFIG := security/grype-expected-config.json
 GRYPE_DB_DIR := build/grype-db
-GRYPE_RUN = GRYPE_DB_CACHE_DIR='$(CURDIR)/$(GRYPE_DB_DIR)/cache' \
-	GRYPE_DB_MAX_ALLOWED_BUILT_AGE=$(GRYPE_DB_MAX_AGE_HOURS)h $(GRYPE) --config $(GRYPE_CONFIG)
+GRYPE_ENV_PASSTHROUGH := PATH HOME TMPDIR DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY \
+	CONTAINER_HOST XDG_RUNTIME_DIR
+GRYPE_RUN = env -i $(foreach name,$(GRYPE_ENV_PASSTHROUGH),$(name)="$${$(name)-}") \
+	GRYPE_DB_CACHE_DIR='$(CURDIR)/$(GRYPE_DB_DIR)/cache' GRYPE_DB_MAX_ALLOWED_BUILT_AGE=$(GRYPE_DB_MAX_AGE_HOURS)h \
+	$(GRYPE) --config $(GRYPE_CONFIG)
+ALPINE_MINOR := $(shell sed -n 's|^FROM docker\.io/library/alpine:\([0-9.]*\)@sha256:.*|\1|p' Containerfile)
 SCAN_IMAGE := $(SMOKE_IMAGE)
 SCAN_DIR := build/image-scan
 VULNERABILITY_EXCEPTIONS := security/vulnerability-exceptions.yaml
@@ -70,6 +75,7 @@ Image and AWS
   aws-bootstrap         [pending FREES-33] Bootstrap AWS prerequisites
   image-build           [pending FREES-36] Build the runner image on AWS
   image-scan            Scan the local test image with the pinned Grype and apply the exception gate
+  grype-expected-config Rewrite security/grype-expected-config.json from the last scan (after a Grype bump)
   sbom                  [pending FREES-37] Generate the image SBOM
   sign                  [pending FREES-37] Sign the image and attest the SBOM
   image-smoke           Build the toolbox image locally (never published) and run the smoke tests
@@ -87,7 +93,7 @@ export HELP_TEXT
 .PHONY: help bootstrap install format lint lint-python lint-yaml lint-actions lint-repo \
 	lint-skills lint-container lint-renovate lint-iac security typecheck test test-unit test-coverage \
 	aws-bootstrap image-build image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
-	require-uv require-container-engine grype-db
+	require-uv require-container-engine grype-db grype-expected-config
 
 help:
 	@printf '%s\n' "$$HELP_TEXT"
@@ -249,6 +255,12 @@ image-scan: require-uv require-container-engine $(GRYPE)
 	rm -rf $(SCAN_DIR)
 	$(MAKE) --no-print-directory grype-db
 	$(CONTAINER_ENGINE) image inspect --format '{{.Id}}' '$(SCAN_IMAGE)' > $(SCAN_DIR)/image-id.txt
+	$(CONTAINER_ENGINE) run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --network=none \
+		--user 10001 --entrypoint /bin/cat '$(SCAN_IMAGE)' /etc/alpine-release > $(SCAN_DIR)/alpine-release.txt
+	@if ! grep -Eqx '$(subst .,\.,$(ALPINE_MINOR))\.[0-9]+' $(SCAN_DIR)/alpine-release.txt; then \
+		printf 'error: the image Alpine release does not match the pinned base image alpine:%s\n' '$(ALPINE_MINOR)' >&2; \
+		exit 1; \
+	fi
 	$(GRYPE_RUN) '$(notdir $(CONTAINER_ENGINE)):$(SCAN_IMAGE)' --output json --file $(SCAN_DIR)/grype.json
 	$(RUN) python -m tools.security.grype_gate \
 		--report $(SCAN_DIR)/grype.json \
@@ -258,7 +270,18 @@ image-scan: require-uv require-container-engine $(GRYPE)
 		--db-schema $(GRYPE_DB_SCHEMA) \
 		--max-db-age-hours $(GRYPE_DB_MAX_AGE_HOURS) \
 		--image-id "$$(cat $(SCAN_DIR)/image-id.txt)" \
-		--distro alpine
+		--expected-config $(GRYPE_EXPECTED_CONFIG) \
+		--distro alpine \
+		--distro-version "$$(cat $(SCAN_DIR)/alpine-release.txt)"
+
+grype-expected-config:
+	@if [ ! -f $(SCAN_DIR)/grype.json ]; then \
+		printf 'error: run make image-scan first; %s is missing\n' '$(SCAN_DIR)/grype.json' >&2; \
+		exit 1; \
+	fi
+	jq '.descriptor.configuration | .file = "" | .db["cache-dir"] = ""' $(SCAN_DIR)/grype.json > $(GRYPE_EXPECTED_CONFIG).tmp
+	mv $(GRYPE_EXPECTED_CONFIG).tmp $(GRYPE_EXPECTED_CONFIG)
+	@printf 'review the diff of %s before committing it\n' '$(GRYPE_EXPECTED_CONFIG)'
 
 sbom:
 	$(call NOT_IMPLEMENTED,sbom,FREES-37)
