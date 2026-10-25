@@ -29,7 +29,8 @@ RUN uv export --directory /toolbox --frozen --no-emit-project --no-header --no-a
     && uv python install "${PYTHON_VERSION}" \
     && uv venv --python "${PYTHON_VERSION}" /opt/venv \
     && uv pip install --python /opt/venv/bin/python --require-hashes --no-deps --only-binary :all: \
-        --compile-bytecode --requirement /tmp/requirements.txt
+        --compile-bytecode --requirement /tmp/requirements.txt \
+    && chmod -R u=rwX,g=rX,o=rX /opt/python /opt/venv
 
 FROM alpine-base AS runtime-base
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
@@ -66,9 +67,9 @@ LABEL org.opencontainers.image.title="linux-compliance-runner" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
-COPY --from=downloads --chmod=0755 /out/usr/local/bin/tofu /usr/local/bin/tofu
-COPY --from=python-env --chmod=u=rwX,go=rX /opt/python /opt/python
-COPY --from=python-env --chmod=u=rwX,go=rX /opt/venv /opt/venv
+COPY --from=downloads /out/usr/local/bin/tofu /usr/local/bin/tofu
+COPY --from=python-env /opt/python /opt/python
+COPY --from=python-env /opt/venv /opt/venv
 ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/home/toolbox \
     LANG=C.UTF-8 \
