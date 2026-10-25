@@ -4,7 +4,8 @@
 
 | Ecosystem | Owner |
 |---|---|
-| Container image digests | Renovate |
+| Container image digests (Alpine base image digest) | Renovate |
+| Alpine apk package pins | Renovate (planned, FREES-35) |
 | GitHub Actions SHAs | Renovate |
 | Packer plugins | Renovate |
 | OpenTofu providers | Renovate |
@@ -33,7 +34,7 @@ created date and an expiry date no later than 90 days out. CI fails on expired e
 
 ## Pull request body template
 
-```
+```text
 Summary of updates and release notes links.
 
 Refs: FREES-<maintenance-issue>
