@@ -16,7 +16,24 @@
     "dockerfile",
     "pre-commit",
     "terraform",
-    "terraform-version"
+    "terraform-version",
+    "custom.regex"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "OpenTofu release version and the SHA-256 of its linux/amd64 archive, pinned together in the Containerfile",
+      "managerFilePatterns": [
+        "/(^|/)Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG OPENTOFU_VERSION=(?<currentValue>\\S+)\\nARG OPENTOFU_SHA256_AMD64=(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "opentofu/opentofu",
+      "datasourceTemplate": "github-release-attachments",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    }
   ],
   "pinDigests": true,
   "minimumReleaseAge": "7 days",
@@ -92,6 +109,16 @@
       "addLabels": [
         "area/aws"
       ]
+    },
+    {
+      "description": "Pinned binary downloads in the Containerfile",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "addLabels": [
+        "area/runner"
+      ],
+      "groupName": "toolbox binaries"
     },
     {
       "description": "Container base image digests and tags in Containerfiles",
