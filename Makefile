@@ -248,6 +248,10 @@ grype-db: $(GRYPE)
 	$(GRYPE_RUN) db status --output json > $(SCAN_DIR)/db-status.json
 
 image-scan: require-uv require-container-engine $(GRYPE)
+	@if ! [ '$(GRYPE_DB_MAX_AGE_HOURS)' -ge 1 ] 2>/dev/null || [ '$(GRYPE_DB_MAX_AGE_HOURS)' -gt 120 ]; then \
+		printf 'error: GRYPE_DB_MAX_AGE_HOURS must be an integer from 1 to 120 (the gate ceiling)\n' >&2; \
+		exit 1; \
+	fi
 	@if ! $(CONTAINER_ENGINE) image inspect '$(SCAN_IMAGE)' >/dev/null 2>&1; then \
 		printf 'error: image %s not found; run make image-smoke first\n' '$(SCAN_IMAGE)' >&2; \
 		exit 1; \

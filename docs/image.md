@@ -170,6 +170,21 @@ make image-scan
    Both must still be non-empty strings. `db.max-allowed-built-age` is not free either: it must equal
    `GRYPE_DB_MAX_AGE_HOURS` in nanoseconds. After a Grype bump, run `make image-scan` (it fails on the new configuration), then
    `make grype-expected-config` to rewrite the file from that report, and review every changed setting in the pull request.
+
+   The expected file cannot weaken the scan, because the gate code also enforces hard invariants on both the effective
+   configuration and the expected file, whatever the file says:
+   - `only-fixed` and `only-notfixed` are `false`, `ignore-wontfix` is empty, and `exclude`, `vex-documents` and `vex-add` are
+     empty;
+   - `ignore` holds exactly Grype's four built-in kernel-header rules (hard-coded in the gate), nothing added or removed;
+   - `distro`, `platform` and `default-image-pull-source` are empty, and `from` is null or `[]`;
+   - `match.stock.using-cpes` and `match.jvm.using-cpes`, the CPE matchers enabled in the baseline, stay `true`;
+   - `search.scope` is `squashed` or `all-layers`, and `by-cve` is `false`, so the IDs used by the exceptions stay stable;
+   - `db.auto-update` is `false`, and `db.validate-age` and `db.validate-by-hash-on-start` are `true`;
+   - the database age limit is at most 120 hours: the Makefile refuses a larger `GRYPE_DB_MAX_AGE_HOURS` and the gate fails on
+     a larger `--max-db-age-hours`.
+
+   A unit test fails when the committed expected file breaks an invariant, so a weakened regenerated file fails CI before any
+   scan. Changing an invariant needs a change to `tools/security/grype_gate.py` and its review.
 5. **Gate.** `tools/security/grype_gate.py` reads the Grype JSON report and `security/vulnerability-exceptions.yaml` and fails on:
    - any schema violation or expired entry in the exceptions file (the shared validator below);
    - any critical, high or unknown-severity finding that no entry lists (an unrated finding can be a critical one). A listing matches only when the vulnerability ID, the package name and
@@ -200,8 +215,10 @@ On the test build of 2026-10-25 (Grype 0.121.0, Alpine 3.24.3, database built 20
 reports 18 findings (1 critical, 6 high, 10 medium, 1 negligible, no unknown), and the critical and high ones are exactly the
 seven listed exceptions below. Run with `GRYPE_MATCH_STOCK_USING_CPES=false`, `GRYPE_DISTRO=alpine:3.10` or
 `GRYPE_ONLY_FIXED=true` in the environment, `make image-scan` still reports the same 18 findings and passes, because the
-variables are scrubbed. A report produced with those variables, bypassing the Makefile, fails the gate on the configuration
-comparison (and, for the distribution override, on the release check).
+variables are scrubbed. A report produced with those variables, bypassing the Makefile, fails the gate on the invariants and the
+configuration comparison (and, for the distribution override, on the release check). Weakening `security/grype.yaml`
+(`exclude: ["./opt/python/**"]` and `match.stock.using-cpes: false`) and regenerating the expected file with
+`make grype-expected-config` drops the scan to 11 findings, and the gate fails on both invariants.
 
 ## Vulnerability exceptions
 

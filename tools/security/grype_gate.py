@@ -14,6 +14,9 @@ The gate reads the Grype JSON report of the image and the exceptions file
   effective Grype configuration differs in any way from the committed expected
   configuration (``security/grype-expected-config.json``) outside the fields
   listed in :data:`VARIABLE_FIELDS`, including any new or unknown setting;
+* the effective or the expected configuration breaks a hard invariant in
+  :data:`INVARIANTS` (settings that hide findings or weaken matching), which
+  no regenerated expected configuration can relax;
 * the vulnerability database is invalid, has another schema, was built in the
   future or is older than the allowed age.
 
@@ -57,6 +60,58 @@ VARIABLE_FIELDS: Final[dict[str, str]] = {
 }
 DERIVED_MAX_AGE_FIELD: Final[tuple[str, str]] = ("db", "max-allowed-built-age")
 NANOSECONDS_PER_SECOND: Final[int] = 1_000_000_000
+MAX_DB_AGE_HOURS_CEILING: Final[int] = 120
+
+
+def _builtin_ignore_rule(name: str, package_type: str, upstream: str) -> dict[str, object]:
+    """Return one of Grype's built-in kernel-header ignore rules as it appears in a report."""
+    return {
+        "vulnerability": "",
+        "include-aliases": False,
+        "reason": "",
+        "namespace": "",
+        "fix-state": "",
+        "package": {
+            "name": name,
+            "version": "",
+            "language": "",
+            "type": package_type,
+            "location": "",
+            "upstream-name": upstream,
+        },
+        "vex-status": "",
+        "vex-justification": "",
+        "match-type": "exact-indirect-match",
+    }
+
+
+BUILTIN_IGNORE_RULES: Final[tuple[dict[str, object], ...]] = (
+    _builtin_ignore_rule("kernel-headers", "rpm", "kernel"),
+    _builtin_ignore_rule("linux(-.*)?-headers-.*", "deb", "linux.*"),
+    _builtin_ignore_rule("linux-libc-dev", "deb", "linux"),
+    _builtin_ignore_rule("linux-kbuild-.*", "deb", "linux.*"),
+)
+INVARIANTS: Final[tuple[tuple[tuple[str, ...], object], ...]] = (
+    (("only-fixed",), False),
+    (("only-notfixed",), False),
+    (("ignore-wontfix",), ""),
+    (("exclude",), []),
+    (("vex-documents",), []),
+    (("vex-add",), []),
+    (("ignore",), list(BUILTIN_IGNORE_RULES)),
+    (("distro",), ""),
+    (("platform",), ""),
+    (("default-image-pull-source",), ""),
+    (("by-cve",), False),
+    (("match", "stock", "using-cpes"), True),
+    (("match", "jvm", "using-cpes"), True),
+    (("db", "auto-update"), False),
+    (("db", "validate-age"), True),
+    (("db", "validate-by-hash-on-start"), True),
+)
+EMPTY_FROM_VALUES: Final[tuple[object, ...]] = (None, [])
+SEARCH_SCOPES: Final[frozenset[str]] = frozenset({"squashed", "all-layers"})
+MISSING: Final[object] = object()
 CLOCK_SKEW: Final[timedelta] = timedelta(minutes=5)
 DIGEST: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}")
 MARKDOWN_SPECIAL: Final[re.Pattern[str]] = re.compile(r"([\\`*_\[\]<>#|~])")
@@ -268,6 +323,53 @@ def configuration_differences(actual: object, expected: object, path: str = "") 
     return []
 
 
+def _as_object(value: object) -> dict[str, object] | None:
+    """Return ``value`` as a JSON object, or None when it is not one."""
+    return cast("dict[str, object]", value) if isinstance(value, dict) else None
+
+
+def _lookup(configuration: Mapping[str, object], path: Sequence[str]) -> object:
+    """Return the value at ``path`` in a nested configuration, or :data:`MISSING`."""
+    node: object = dict(configuration)
+    for step in path:
+        container = _as_object(node)
+        if container is None:
+            return MISSING
+        node = container.get(step, MISSING)
+    return node
+
+
+def _shown(value: object) -> str:
+    """Render a looked-up value, naming a missing one."""
+    return "<missing>" if value is MISSING else _json(value)
+
+
+def invariant_violations(configuration: Mapping[str, object]) -> list[str]:
+    """Return every hard invariant that ``configuration`` breaks.
+
+    The invariants hold whatever the expected configuration file says, so a
+    regenerated expected file can never relax them; changing one needs a change
+    to this module and its review.
+    """
+    violations = [
+        f"{'.'.join(path)} must be {_json(required)}, got {_shown(value)}"
+        for path, required in INVARIANTS
+        if (value := _lookup(configuration, path)) is MISSING
+        or configuration_differences(value, required, ".".join(path))
+    ]
+    origin = _lookup(configuration, ("from",))
+    if origin is MISSING or not any(
+        type(origin) is type(empty) and origin == empty for empty in EMPTY_FROM_VALUES
+    ):
+        violations.append(f"from must be null or [], got {_shown(origin)}")
+    scope = _lookup(configuration, ("search", "scope"))
+    if not isinstance(scope, str) or scope not in SEARCH_SCOPES:
+        violations.append(
+            f"search.scope must be one of {', '.join(sorted(SEARCH_SCOPES))}, got {_shown(scope)}"
+        )
+    return violations
+
+
 def expected_configuration_for(
     expected: Mapping[str, object], max_db_age: timedelta
 ) -> dict[str, object]:
@@ -409,6 +511,19 @@ def provenance_failures(report: ScanReport, settings: GateSettings, now: datetim
             f"expected {' '.join(settings.distro)!r}"
         )
     failures.extend(report.suppressions)
+    if settings.max_db_age > timedelta(hours=MAX_DB_AGE_HOURS_CEILING):
+        failures.append(
+            f"the database age limit of {settings.max_db_age.total_seconds() / 3600:.0f} hours "
+            f"exceeds the gate's {MAX_DB_AGE_HOURS_CEILING}-hour ceiling"
+        )
+    failures.extend(
+        f"Grype configuration breaks a gate invariant: {violation}"
+        for violation in invariant_violations(report.configuration)
+    )
+    failures.extend(
+        f"expected configuration file breaks a gate invariant: {violation}"
+        for violation in invariant_violations(settings.expected_configuration)
+    )
     failures.extend(
         f"Grype configuration differs from the expected configuration: {difference}"
         for difference in configuration_differences(

@@ -80,7 +80,11 @@ every pull request. The archive SHA-256 `64e07133d3486115de647a66581461dccf5c732
 `grype_0.121.0_checksums.txt` and a fresh download, and the binary reports database schema 6.
 A Grype bump changes the effective scanner configuration that the gate compares, so a Renovate pull request for Grype also
 needs `security/grype-expected-config.json` regenerated with `make grype-expected-config` and reviewed; until then the gate
-fails, by design.
+fails, by design. Regenerating the expected file can never relax the gate's hard invariants (no suppression settings, only
+the built-in ignore rules, no distribution, platform or source override, CPE matchers that are on today stay on, database
+checks on and a database age of at most 120 hours; the full list is in [`image.md`](image.md#vulnerability-gate)). They live
+in the gate code, and a unit test fails when the committed expected file breaks one. Changing an invariant needs a change to
+`tools/security/grype_gate.py` and its review.
 
 ## Residual risk
 

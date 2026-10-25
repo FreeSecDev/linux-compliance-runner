@@ -427,18 +427,21 @@ def test_configuration_mutation_fails(path: tuple[str, ...], value: object) -> N
         node = node[step]
     node[path[-1]] = value
     failures = decide(report).failures
-    assert len(failures) >= 1
-    assert all(
-        failure.startswith("Grype configuration differs from the expected configuration: ")
-        for failure in failures
-    )
-    assert any(".".join(path) in failure for failure in failures)
+    differs = "Grype configuration differs from the expected configuration: "
+    invariant = "Grype configuration breaks a gate invariant: "
+    assert failures
+    assert all(failure.startswith((differs, invariant)) for failure in failures)
+    assert any(failure.startswith(differs) and ".".join(path) in failure for failure in failures)
 
 
 def test_configuration_difference_message() -> None:
     report = grype_report()
     report["descriptor"]["configuration"]["match"]["stock"]["using-cpes"] = False
     assert decide(report).failures == (
+        (
+            "Grype configuration breaks a gate invariant: "
+            "match.stock.using-cpes must be true, got false"
+        ),
         (
             "Grype configuration differs from the expected configuration: "
             "match.stock.using-cpes: expected true, got false"
@@ -514,6 +517,130 @@ def test_database_age_limit_comes_from_the_settings() -> None:
 
 def test_expected_configuration_without_db_section_is_copied() -> None:
     assert gate.expected_configuration_for({"a": 1}, timedelta(hours=1)) == {"a": 1}
+
+
+def set_path(configuration: dict[str, Any], path: tuple[str, ...], value: object) -> None:
+    node: Any = configuration
+    for step in path[:-1]:
+        node = node[step]
+    if value is DELETE:
+        del node[path[-1]]
+    else:
+        node[path[-1]] = value
+
+
+DELETE: Final[object] = object()
+EXTRA_IGNORE_RULE: Final[dict[str, Any]] = {
+    **gate.BUILTIN_IGNORE_RULES[0],
+    "vulnerability": "CVE-2026-1",
+}
+INVARIANT_MUTATIONS: Final[list[tuple[tuple[str, ...], object, str]]] = [
+    (("only-fixed",), True, "only-fixed must be false, got true"),
+    (("only-notfixed",), True, "only-notfixed must be false, got true"),
+    (("ignore-wontfix",), "fixed", 'ignore-wontfix must be "", got "fixed"'),
+    (("exclude",), ["./opt/python/**"], 'exclude must be [], got ["./opt/python/**"]'),
+    (("vex-documents",), ["vex.json"], "vex-documents must be []"),
+    (("vex-add",), ["fixed"], "vex-add must be []"),
+    (("ignore",), [*gate.BUILTIN_IGNORE_RULES, EXTRA_IGNORE_RULE], "ignore must be"),
+    (("ignore",), list(gate.BUILTIN_IGNORE_RULES[1:]), "ignore must be"),
+    (("ignore",), [], "ignore must be"),
+    (("distro",), "alpine:3.10", 'distro must be "", got "alpine:3.10"'),
+    (("platform",), "linux/arm64", 'platform must be "", got "linux/arm64"'),
+    (("from",), ["registry"], 'from must be null or [], got ["registry"]'),
+    (("from",), "registry", 'from must be null or [], got "registry"'),
+    (("from",), DELETE, "from must be null or [], got <missing>"),
+    (("default-image-pull-source",), "registry", "default-image-pull-source must be"),
+    (("by-cve",), True, "by-cve must be false, got true"),
+    (("match", "stock", "using-cpes"), False, "match.stock.using-cpes must be true, got false"),
+    (("match", "jvm", "using-cpes"), False, "match.jvm.using-cpes must be true, got false"),
+    (("match", "stock"), DELETE, "match.stock.using-cpes must be true, got <missing>"),
+    (("match",), "none", "match.stock.using-cpes must be true, got <missing>"),
+    (("db", "auto-update"), True, "db.auto-update must be false, got true"),
+    (("db", "validate-age"), False, "db.validate-age must be true, got false"),
+    (("db", "validate-by-hash-on-start"), False, "db.validate-by-hash-on-start must be true"),
+    (("search", "scope"), "none", 'search.scope must be one of all-layers, squashed, got "none"'),
+    (("search",), DELETE, "search.scope must be one of all-layers, squashed, got <missing>"),
+]
+
+
+@pytest.mark.parametrize(("path", "value", "message"), INVARIANT_MUTATIONS, ids=str)
+def test_invariant_holds_even_when_the_expected_file_is_weakened_to_match(
+    path: tuple[str, ...], value: object, message: str
+) -> None:
+    report = grype_report()
+    set_path(report["descriptor"]["configuration"], path, value)
+    weakened = deepcopy(EXPECTED_CONFIG)
+    set_path(weakened, path, value)
+    settings = gate.GateSettings(
+        "0.121.0", 6, timedelta(hours=120), IMAGE_ID, ("alpine", "3.24.3"), weakened
+    )
+    failures = gate.evaluate(gate.parse_report(report), (), settings, NOW).failures
+    assert not any("differs from the expected configuration" in failure for failure in failures)
+    assert any(
+        failure.startswith("Grype configuration breaks a gate invariant: ") and message in failure
+        for failure in failures
+    )
+    assert any(
+        failure.startswith("expected configuration file breaks a gate invariant: ")
+        and message in failure
+        for failure in failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [(("from",), []), (("from",), None), (("search", "scope"), "all-layers")],
+)
+def test_allowed_invariant_alternatives_pass(path: tuple[str, ...], value: object) -> None:
+    report = grype_report()
+    set_path(report["descriptor"]["configuration"], path, value)
+    expected = deepcopy(EXPECTED_CONFIG)
+    set_path(expected, path, value)
+    settings = gate.GateSettings(
+        "0.121.0", 6, timedelta(hours=120), IMAGE_ID, ("alpine", "3.24.3"), expected
+    )
+    assert gate.evaluate(gate.parse_report(report), (), settings, NOW).passed
+
+
+def test_committed_expected_configuration_satisfies_every_invariant() -> None:
+    assert gate.invariant_violations(EXPECTED_CONFIG) == []
+
+
+def test_invariants_cover_every_cpe_matcher_enabled_in_the_baseline() -> None:
+    enabled = {
+        name for name, matcher in EXPECTED_CONFIG["match"].items() if matcher.get("using-cpes")
+    }
+    required = {path[1] for path, value in gate.INVARIANTS if path[0] == "match" and value is True}
+    assert enabled == required == {"jvm", "stock"}
+
+
+def test_builtin_ignore_rules_equal_the_baseline() -> None:
+    assert EXPECTED_CONFIG["ignore"] == list(gate.BUILTIN_IGNORE_RULES)
+
+
+@pytest.mark.parametrize(("hours", "passes"), [(120, True), (121, False), (100000, False)])
+def test_database_age_limit_has_a_hard_ceiling(hours: int, passes: bool) -> None:
+    report = grype_report()
+    report["descriptor"]["configuration"]["db"]["max-allowed-built-age"] = hours * 3600 * 10**9
+    settings = gate.GateSettings(
+        "0.121.0", 6, timedelta(hours=hours), IMAGE_ID, ("alpine", "3.24.3"), EXPECTED_CONFIG
+    )
+    failures = gate.evaluate(gate.parse_report(report), (), settings, NOW).failures
+    assert (failures == ()) is passes
+    if not passes:
+        assert failures == (
+            f"the database age limit of {hours} hours exceeds the gate's 120-hour ceiling",
+        )
+
+
+def test_main_refuses_a_database_age_above_the_ceiling(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report, exceptions = write_inputs(tmp_path, grype_report())
+    arguments = cli_arguments(report, exceptions)
+    arguments[arguments.index("--max-db-age-hours") + 1] = "100000"
+    assert gate.main(arguments, now=NOW) == 1
+    assert "exceeds the gate's 120-hour ceiling" in capsys.readouterr().out
 
 
 def test_committed_expected_configuration_has_placeholders_for_variable_fields() -> None:
