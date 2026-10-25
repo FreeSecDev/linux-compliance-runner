@@ -19,7 +19,7 @@ The configuration files are committed, but the bots are not confirmed active:
 
 | Ecosystem | Owner | Why |
 |---|---|---|
-| Python (`uv`, `pyproject.toml`) versions and security updates | Dependabot | Native GitHub security alerts and the `uv` ecosystem keep Python updates and advisories in one place |
+| Python (`uv`, `pyproject.toml`) versions and security updates, including hadolint (`hadolint-bin`) | Dependabot | Native GitHub security alerts and the `uv` ecosystem keep Python updates and advisories in one place |
 | GitHub Actions, pinned to full commit SHAs | Renovate | Digest pinning with release annotations ([ADR 0005](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0005-renovate-version-annotations.md)) |
 | Container image digests, including the Alpine base image digest in the `Containerfile` | Renovate | Images are consumed by digest only; the `dockerfile` manager matches `Containerfile` by default |
 | Alpine `apk` package pins in the `Containerfile` | Renovate (planned) | A custom manager over the pinned package versions is a follow-up tracked in FREES-35; until then these pins are updated by hand |

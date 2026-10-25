@@ -19,8 +19,8 @@ make help
 
 `make bootstrap` runs `uv sync --frozen` (exact versions from `uv.lock`), installs the `pre-commit` and
 `pre-push` git hooks and prints tool versions. A missing `uv` produces an error with install instructions.
-OpenTofu checks join `make bootstrap` with FREES-30. hadolint is not a Python tool and is not installed by
-`uv`; install it separately when a `Containerfile` exists (see `lint-container`).
+OpenTofu checks join `make bootstrap` with FREES-30. hadolint is installed by `uv sync` from the `hadolint-bin`
+PyPI package, so no separate install is needed.
 
 ## Makefile targets
 
@@ -44,7 +44,7 @@ OpenTofu checks join `make bootstrap` with FREES-30. hadolint is not a Python to
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
 | `clean` | implemented | Removes caches and coverage output |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
-| `lint-container` | implemented | hadolint on every tracked `Containerfile`; prints that there is nothing to lint and exits 0 while none exists, and fails if hadolint is missing once one does |
+| `lint-container` | implemented | hadolint on every tracked `Containerfile`; prints that there is nothing to lint and exits 0 while none exists, and runs `uv run --frozen hadolint` once one does |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |
 | `aws-bootstrap` | pending FREES-33 | AWS bootstrap |
 | `image-build` | pending FREES-36 | Runner image build on AWS |
@@ -83,11 +83,11 @@ uv run pre-commit run --all-files --hook-stage manual
 Hooks for OpenTofu and Checkov (FREES-30, FREES-31) are pending the issues that introduce their sources. They are intentionally absent rather than faked.
 
 Pin ownership rule: every Python tool hook (ruff, yamllint, mypy, pyright, pylint, bandit, pytest, shellcheck,
-actionlint, zizmor) is a `repo: local` hook that runs `uv run --frozen <tool>`, so its version lives only in
+actionlint, zizmor, hadolint) is a `repo: local` hook that runs `uv run --frozen <tool>`, so its version lives only in
 `pyproject.toml` and `uv.lock` and is updated by Dependabot. Only hook repositories that are not tools declared in
-`pyproject.toml` (pre-commit-hooks, gitleaks, markdownlint-cli2, hadolint) are remote hooks. hadolint is a Haskell
-binary, not a Python tool, so it cannot run through `uv`; its `hadolint` hook runs the binary from `PATH` and
-is restricted to `Containerfile` by `files: (^|/)Containerfile$`. pre-commit-hooks is a Python
+`pyproject.toml` (pre-commit-hooks, gitleaks, markdownlint-cli2) are remote hooks. hadolint is pinned as `hadolint-bin` in
+`pyproject.toml` and its local hook is restricted to `Containerfile` by `files: (^|/)Containerfile$`; the upstream
+hadolint hook is not used because it only runs a binary from `PATH` and would pin nothing. pre-commit-hooks is a Python
 package, but its version is the hook revision, owned by Renovate rather than by the project environment. They are
 pinned by full commit SHA with a `# vX.Y.Z` annotation and updated by Renovate. `additional_dependencies` is never used. The annotation on `rev:` is the second permitted
 YAML comment form (ADR 0005, amendment 2026-10-25).

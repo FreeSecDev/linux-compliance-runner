@@ -110,15 +110,12 @@ lint-skills: require-uv
 		--required $(REQUIRED_SKILLS) \
 		--external $(EXTERNAL_SKILLS)
 
-lint-container:
+lint-container: require-uv
 	@containerfiles="$$(git ls-files --cached --others --exclude-standard -- 'Containerfile' '*/Containerfile')"; \
 	if [ -z "$$containerfiles" ]; then \
 		printf 'lint-container: no Containerfile in the repository yet, nothing to lint (Containerfile tracked in FREES-35)\n'; \
-	elif ! command -v hadolint >/dev/null; then \
-		printf 'error: hadolint is required to lint %s but was not found on PATH\n' "$$containerfiles" >&2; \
-		exit 1; \
 	else \
-		printf '%s\n' "$$containerfiles" | xargs hadolint; \
+		printf '%s\n' "$$containerfiles" | xargs $(RUN) hadolint; \
 	fi
 
 lint-iac:
