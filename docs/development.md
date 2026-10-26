@@ -3,7 +3,7 @@
 The `Makefile` is the single entry point for developers and CI. `make ci` runs every implemented,
 credential-free stage locally and is what the pull request workflow runs, split into jobs.
 
-Jira: FREES-35 and FREES-38 (Containerfile and smoke tests), FREES-37 (Grype gate), FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
+Jira: FREES-35 and FREES-38 (Containerfile and smoke tests), FREES-37 and FREES-135 (Grype gate), FREES-133 (Renovate validator lockfile), FREES-68 (Makefile), FREES-69 (pre-commit), FREES-70 (Python tooling),
 FREES-71 (pull request workflow), FREES-22 (community files), FREES-81 (dependency configuration),
 FREES-29 (branch protection). The same foundation exists in the collection repository, which is the reference.
 
@@ -42,9 +42,9 @@ PyPI package, so no separate install is needed.
 | `test-unit` | implemented | `pytest tests/unit` |
 | `test-coverage` | implemented | Unit tests with branch coverage, 95% overall, 100% on `tools/` |
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
-| `clean` | implemented | Removes caches, coverage output and `build/` (the Grype binary, database and scan reports) |
+| `clean` | implemented | Removes caches, coverage output and `build/` (the Renovate tree, the cosign and Grype binaries, the Sigstore trust root cache, the database and scan reports) |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
-| `lint-renovate` | implemented | `renovate-config-validator --strict --no-global` with a pinned Renovate; needs Node.js 24 (CI installs it with `actions/setup-node`) |
+| `lint-renovate` | implemented | Checks that `tools/renovate/package-lock.json` pins every package (`tools/security/npm_lock.py`), installs it into `build/tools/renovate/` with `npm ci --ignore-scripts`, checks the installed tree against the lockfile, then runs `renovate-config-validator --strict --no-global`; needs Node.js 24 and npm 11.19.1 or newer (CI installs Node.js 24.22.1 with `actions/setup-node`). See [`dependency-management.md`](dependency-management.md#renovate-validator-tree) |
 | `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
 | `toolbox-lock-check` | implemented | Fails when `toolbox/uv.lock` does not match `toolbox/pyproject.toml` |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |

@@ -2,7 +2,7 @@
 
 Scope: what the CI toolbox image contains, how it is pinned and who updates each pin, its security properties, and how to
 test and scan it. Design rationale is in [ADR 0001](adr/0001-toolbox-image.md). Jira: FREES-35 (Containerfile), FREES-38 (smoke tests),
-FREES-37 (vulnerability gate).
+FREES-37 (vulnerability gate), FREES-135 (gate hardening and Grype release signature).
 
 The image is a job toolbox for the `freesecdev.linux_compliance` CI. It is not a self-hosted runner: it has no runner agent,
 no entrypoint and no network service. The release image is built in AWS (FREES-36), scanned, signed and consumed by digest.
@@ -45,12 +45,13 @@ The image ships Alpine's uv 0.11.19 while CI uses uv 0.13.1; uv only exports the
   changes only the lock; the Containerfile exports it during the build, so nothing else needs regenerating.
 - Renovate owns the base image digest (built-in `dockerfile` manager) and the OpenTofu version and checksum (`customManagers`
   in `.renovaterc.json`, datasource `github-release-attachments`, which also computes the new archive digest).
-  `make lint-renovate` (part of `make lint`) runs `renovate-config-validator --strict --no-global` with a pinned Renovate
-  version; it needs Node.js 24 and fails with a clear message otherwise. The 7-day `minimumReleaseAge` also applies to these
-  managers, so a security release of OpenTofu or CPython needs a manual pull request.
-- `RENOVATE_VERSION` in the Makefile is tracked by a regex manager on the npm datasource. CI runs the validator on Node.js 24.22.1
-  (the 2026-10-20 security release, same as the image). `npx` has no lockfile, so Renovate's transitive packages are not
-  pinned; a committed lockfile is tracked separately.
+  `make lint-renovate` (part of `make lint`) runs `renovate-config-validator --strict --no-global` from the locked Renovate
+  tree in `tools/renovate/`, installed with `npm ci --ignore-scripts` (FREES-133, see
+  [`dependency-management.md`](dependency-management.md#renovate-validator-tree)); it needs Node.js 24 and npm 11.19.1 or
+  newer and fails with a clear message otherwise. The 7-day `minimumReleaseAge` also applies to these managers, so a
+  security release of OpenTofu or CPython needs a manual pull request.
+- The Renovate version and every transitive npm package are pinned by `tools/renovate/package-lock.json`, which Renovate's
+  `npm` manager updates. CI runs the validator on Node.js 24.22.1 (the 2026-10-20 security release, same as the image).
 - The python-build-standalone manager tracks the release tag and the archive digest. Its asset name contains the CPython
   patch version, so the upstream `SHA256SUMS` (142 KB) exceeds the datasource's 5120-byte checksum-file limit and Renovate falls back to
   downloading and hashing release assets until one matches (about 109 assets and 2.8 GB per lookup). When a newer release no longer carries 3.12.15 the bot cannot compute a digest and a maintainer updates
@@ -136,18 +137,43 @@ make image-scan
 
 1. **Scanner.** Grype `GRYPE_VERSION` (0.121.0, a security release; see
    [`dependency-management.md`](dependency-management.md#grype-version)) is downloaded from the GitHub release into `build/tools/grype-<version>/`.
-   The SHA-256 pinned in the Makefile (`GRYPE_SHA256_LINUX_AMD64`) must appear verbatim in the release `checksums.txt` and must
-   match the archive; nothing is piped into a shell. The binary must report the pinned version and database schema. linux/amd64
-   only. The release also carries a Sigstore bundle for `checksums.txt`; it is not verified yet because the toolchain has no
-   cosign, so the committed checksum is the trust anchor. Renovate updates the version and checksum together (see
-   [`dependency-management.md`](dependency-management.md)).
+   Before the pinned checksum is trusted, the release's Sigstore bundle for `checksums.txt`
+   (`grype_<version>_checksums.txt.sigstore.json`) is verified with a pinned cosign (below):
+
+   ```text
+   cosign verify-blob --bundle checksums.txt.sigstore.json \
+     --certificate-identity-regexp '^https://github\.com/anchore/grype/\.github/workflows/release\.yaml@refs/heads/main$' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     --certificate-github-workflow-repository anchore/grype checksums.txt
+   ```
+
+   So `checksums.txt` must be signed by a Fulcio certificate issued to Grype's own release workflow on `main` in
+   `github.com/anchore/grype` through GitHub Actions OIDC, and the signature must be in the Rekor transparency log (the bundle
+   carries the inclusion proof). A tampered checksums file, another repository or workflow, or another issuer fails the target.
+   Then the SHA-256 pinned in the Makefile (`GRYPE_SHA256_LINUX_AMD64`) must appear verbatim in the verified `checksums.txt`
+   and must match the archive; nothing is piped into a shell. The binary must report the pinned version and database schema.
+   linux/amd64 only. Renovate updates the version and checksum together (see
+   [`dependency-management.md`](dependency-management.md)). If Anchore moves the release to another workflow or ref, the
+   verification fails until `GRYPE_SIGNER_IDENTITY` in the Makefile is reviewed and changed. The signature and checksums are
+   checked whenever the target installs Grype: on every CI run, and locally the first time for each version (the installed
+   binary is then reused from `build/tools/`; `make clean` forces a fresh, verified download).
+
+   **cosign.** `COSIGN_VERSION` (3.1.3) is downloaded the same way as Grype into `build/tools/cosign-<version>/`: the
+   SHA-256 pinned in the Makefile (`COSIGN_SHA256_LINUX_AMD64`) must appear in the release `cosign_checksums.txt` and match
+   the binary, and the binary must report the pinned version. The pinned checksum is cosign's trust anchor (it was also
+   compared with the digest GitHub reports for the release asset). cosign runs under `env -i` with only `PATH`, `HOME`,
+   `TMPDIR` and the proxy variables, so no inherited `SIGSTORE_*`, `COSIGN_*` or `TUF_*` variable can swap the trust root.
+   It loads the Sigstore trust root (Fulcio and Rekor keys) through TUF from `tuf-repo-cdn.sigstore.dev`, starting from
+   the root embedded in the binary, and caches it in `build/sigstore-tuf/`.
 2. **Database.** Grype databases are rebuilt daily and are not signed, so a database cannot be pinned in the repository
    without going stale within days. The target pins what Grype allows: the schema major (`GRYPE_DB_SCHEMA`, 6, which must equal
    the schema the binary supports) and the listing URL (`https://grype.anchore.io/databases/v6/latest.json`). It downloads the
    listing, checks that the archive name and the `sha256:` checksum have the expected form, downloads the archive (about
    195 MB) into `build/grype-db/archives/` (reused while it is still the current one), verifies its SHA-256 against the listing
    and imports it with `grype db import`. Scans run with automatic updates disabled, so the scan uses exactly the database that
-   was verified.
+   was verified. Trust in the database is therefore TLS to `grype.anchore.io` plus a SHA-256 taken from a listing served by
+   the same origin: it detects a corrupted or truncated download, not a compromised origin. That is the strongest check
+   Grype offers today; revisit it (FREES-135) if Anchore starts signing databases or listings.
 3. **Database age.** Grype refuses a database older than `GRYPE_DB_MAX_AGE_HOURS` (120 hours) through `validate-age`, and the
    gate checks the build time recorded in the report again: older than 120 hours, or more than five minutes in the future,
    fails the gate, so a stale database cannot produce a false pass.
@@ -179,6 +205,8 @@ make image-scan
    - `distro`, `platform` and `default-image-pull-source` are empty, and `from` is null or `[]`;
    - `match.stock.using-cpes` and `match.jvm.using-cpes`, the CPE matchers enabled in the baseline, stay `true`;
    - `search.scope` is `squashed` or `all-layers`, and `by-cve` is `false`, so the IDs used by the exceptions stay stable;
+   - `search.indexed-archives` is `true`, so packages inside jar, zip and wheel archives in the image are still cataloged
+     once the image contains such archives (turning it off would silently drop their findings);
    - `db.auto-update` is `false`, and `db.validate-age` and `db.validate-by-hash-on-start` are `true`;
    - the database age limit is at most 120 hours: the Makefile refuses a larger `GRYPE_DB_MAX_AGE_HOURS` and the gate fails on
      a larger `--max-db-age-hours`.
@@ -207,7 +235,8 @@ make image-scan
    summary is added to the job summary and the directory is uploaded as the `image-scan` artifact (kept 30 days), also when the
    gate fails.
 
-Network dependency: the target needs `github.com` (and its release download host) for the Grype archive on the first run, and
+Network dependency: the target needs `github.com` (and its release download host) for the cosign and Grype downloads and
+`tuf-repo-cdn.sigstore.dev` for the Sigstore trust root on the first run, and
 `grype.anchore.io` for the listing on every run and for each new database archive. Without network access it fails; it never
 falls back to an unverified or older database.
 

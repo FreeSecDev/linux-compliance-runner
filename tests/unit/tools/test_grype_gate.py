@@ -560,6 +560,16 @@ INVARIANT_MUTATIONS: Final[list[tuple[tuple[str, ...], object, str]]] = [
     (("db", "validate-by-hash-on-start"), False, "db.validate-by-hash-on-start must be true"),
     (("search", "scope"), "none", 'search.scope must be one of all-layers, squashed, got "none"'),
     (("search",), DELETE, "search.scope must be one of all-layers, squashed, got <missing>"),
+    (("search",), DELETE, "search.indexed-archives must be true, got <missing>"),
+    (("search", "indexed-archives"), False, "search.indexed-archives must be true, got false"),
+    (("search", "indexed-archives"), 1, "search.indexed-archives must be true, got 1"),
+    (("search", "indexed-archives"), "true", 'search.indexed-archives must be true, got "true"'),
+    (("search", "indexed-archives"), None, "search.indexed-archives must be true, got null"),
+    (
+        ("search", "indexed-archives"),
+        DELETE,
+        "search.indexed-archives must be true, got <missing>",
+    ),
 ]
 
 
@@ -612,6 +622,28 @@ def test_invariants_cover_every_cpe_matcher_enabled_in_the_baseline() -> None:
     }
     required = {path[1] for path, value in gate.INVARIANTS if path[0] == "match" and value is True}
     assert enabled == required == {"jvm", "stock"}
+
+
+def test_invariants_require_indexed_archive_search() -> None:
+    assert EXPECTED_CONFIG["search"]["indexed-archives"] is True
+    assert (("search", "indexed-archives"), True) in gate.INVARIANTS
+
+
+def test_indexed_archives_invariant_fails_although_the_weakened_report_matches_the_file() -> None:
+    report = grype_report()
+    report["descriptor"]["configuration"]["search"]["indexed-archives"] = False
+    weakened = deepcopy(EXPECTED_CONFIG)
+    weakened["search"]["indexed-archives"] = False
+    settings = gate.GateSettings(
+        "0.121.0", 6, timedelta(hours=120), IMAGE_ID, ("alpine", "3.24.3"), weakened
+    )
+    decision = gate.evaluate(gate.parse_report(report), (), settings, NOW)
+    assert not decision.passed
+    violation = "search.indexed-archives must be true, got false"
+    assert decision.failures == (
+        f"Grype configuration breaks a gate invariant: {violation}",
+        f"expected configuration file breaks a gate invariant: {violation}",
+    )
 
 
 def test_builtin_ignore_rules_equal_the_baseline() -> None:

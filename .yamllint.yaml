@@ -4,6 +4,7 @@ ignore:
   - .venv/
   - .git/
   - .claude/worktrees/
+  - build/
 rules:
   document-start:
     present: true

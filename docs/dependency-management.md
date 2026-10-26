@@ -26,6 +26,8 @@ The configuration files are committed, but the bots are not confirmed active:
 | OpenTofu version and archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource updates version and checksum together |
 | python-build-standalone release and CPython archive SHA-256 in the `Containerfile` | Renovate | `customManagers` regex with the `github-release-attachments` datasource; the toolbox's CPython minor version still changes only by a deliberate pull request |
 | Grype version and linux/amd64 archive SHA-256 in the `Makefile` (`GRYPE_VERSION`, `GRYPE_SHA256_LINUX_AMD64`) | Renovate | `customManagers` regex with the `github-release-attachments` datasource, which reads the new digest from the release `checksums.txt`; grouped as `image scanner` |
+| cosign version and linux/amd64 binary SHA-256 in the `Makefile` (`COSIGN_VERSION`, `COSIGN_SHA256_LINUX_AMD64`), used to verify the Grype release signature | Renovate | `customManagers` regex with the `github-release-attachments` datasource on `sigstore/cosign` (digest from `cosign_checksums.txt`); grouped with Grype as `image scanner`. See [cosign version](#cosign-version) |
+| Renovate validator tree for `make lint-renovate` (`tools/renovate/package.json`, `tools/renovate/package-lock.json`), including the `packageManager` npm pin | Renovate | `npm` manager, restricted to `tools/renovate/package.json`, plus weekly lock file maintenance for the transitive packages; grouped as `renovate validator`. See [Renovate validator tree](#renovate-validator-tree) |
 | Grype vulnerability database | Not pinned (fetched per scan) | Rebuilt daily and unsigned; `make image-scan` verifies the archive SHA-256 against the listing and fails when the database is older than 120 hours. See [`image.md`](image.md#vulnerability-gate) |
 | Python tools in the toolbox image (`toolbox/pyproject.toml`, `toolbox/uv.lock`) | Dependabot | A second `uv` entry for `/toolbox`; the Containerfile exports the lock during the build |
 | pre-commit hooks | Renovate | Hooks are pinned by revision |
@@ -35,7 +37,7 @@ The configuration files are committed, but the bots are not confirmed active:
 | Security updates for ecosystems in GitHub's dependency graph (Python `uv`, GitHub Actions) | Dependabot | GitHub security updates are enabled for the repository; Renovate's `vulnerabilityAlerts` is disabled |
 | Security fixes for container digests, `apk` pins, pre-commit hooks and OpenTofu providers | Renovate (scheduled) | No advisory-driven pull requests exist for these; see residual risk below |
 
-Renovate runs only an explicit allow-list of managers (`github-actions`, `dockerfile`, `pre-commit`, `terraform`, `terraform-version`, `custom.regex`), none of which is a Python manager. Two enabled managers could
+Renovate runs only an explicit allow-list of managers (`github-actions`, `dockerfile`, `pre-commit`, `terraform`, `terraform-version`, `npm`, `custom.regex`), none of which is a Python manager. Two enabled managers could
 still see Python data, so Renovate also disables the `pypi` datasource (Python packages in pre-commit
 `additional_dependencies`), the `python-version` datasource and the `actions/python-versions` package that the
 `setup-python` action's version input resolves through. Renovate's `pre-commit` manager is off by default, so it is
@@ -81,10 +83,79 @@ every pull request. The archive SHA-256 `64e07133d3486115de647a66581461dccf5c732
 A Grype bump changes the effective scanner configuration that the gate compares, so a Renovate pull request for Grype also
 needs `security/grype-expected-config.json` regenerated with `make grype-expected-config` and reviewed; until then the gate
 fails, by design. Regenerating the expected file can never relax the gate's hard invariants (no suppression settings, only
-the built-in ignore rules, no distribution, platform or source override, CPE matchers that are on today stay on, database
-checks on and a database age of at most 120 hours; the full list is in [`image.md`](image.md#vulnerability-gate)). They live
+the built-in ignore rules, no distribution, platform or source override, CPE matchers that are on today stay on, archive
+cataloging (`search.indexed-archives`) on, database checks on and a database age of at most 120 hours; the full list is in [`image.md`](image.md#vulnerability-gate)). They live
 in the gate code, and a unit test fails when the committed expected file breaks one. Changing an invariant needs a change to
 `tools/security/grype_gate.py` and its review.
+
+### Renovate validator tree
+
+`make lint-renovate` used to run Renovate through `npx`, which resolved about 600 transitive npm packages unpinned on every
+run and ran their install scripts (FREES-133). Renovate is now installed from a committed lockfile:
+
+- `tools/renovate/package.json` pins `renovate` to an exact version (44.167.5, published 2026-10-18, older than seven days
+  when chosen) and `packageManager` to `npm@11.19.1`, the npm bundled with the CI Node.js 24.22.1.
+- `tools/renovate/package-lock.json` (lockfile version 3, 619 packages, 300,190 bytes) pins every package to an exact
+  version, its `registry.npmjs.org` tarball and a SHA-512 `integrity` hash. It is below the pre-commit
+  `check-added-large-files` limit of 512 KB, so no size exception is needed and the digest-pinned Renovate container
+  image (the alternative in FREES-133) was not needed either. A unit test fails if the lockfile reaches the limit.
+- The target copies both files and `tools/renovate/.npmrc` into `build/tools/renovate/` and runs
+  `npm ci --ignore-scripts --allow-git=none --allow-remote=none --allow-file=none --allow-directory=none`: npm installs exactly
+  the locked tree, refuses a lockfile that is out of sync with `package.json` or misses an entry, verifies every tarball
+  against its integrity hash, refuses git, URL, file and directory sources, and runs no install script. The validator is
+  then run from `build/tools/renovate/node_modules/.bin/`. CI (`lint` job, Node.js 24.22.1 from `actions/setup-node`) and
+  local runs use the same target and therefore the same tree; the target fails on Node.js older than 24 or npm older than
+  11.19.1, which lacks the source restrictions.
+- `tools/security/npm_lock.py` runs before the install and fails when anything could be resolved outside the lockfile: a
+  manifest dependency that is not an exact `x.y.z` version (ranges, tags, git, URL, file and alias specs), a manifest key
+  outside the allow-list (such as `overrides`, `scripts` or another dependency type), a lockfile other than version 3, a
+  root entry that differs from the manifest, a linked package, a package not resolved to its own registry tarball or without
+  one SHA-512 hash, or a dependency, optional dependency or required peer of any locked package that does not resolve to a
+  locked package through npm's `node_modules` lookup. After the install it compares `node_modules/.package-lock.json`, the
+  tree npm actually installed, with the committed lockfile and fails on any extra, missing or different package.
+  `tests/unit/tools/test_npm_lock.py` runs it on the committed files and on mutated copies, and checks that the Makefile
+  installs only through `npm ci --ignore-scripts`.
+- Because install scripts are disabled, Renovate's optional native `re2` module is not built (its install script would
+  download an unpinned prebuilt binary). The validator therefore checks regular expressions with JavaScript `RegExp`;
+  `RENOVATE_X_IGNORE_RE2=true` selects that engine explicitly instead of printing a stack trace. The hosted Renovate uses
+  RE2, which rejects lookarounds and backreferences, so keep `matchStrings` free of them.
+- Release age: Renovate's `minimumReleaseAge` of seven days gates the `renovate` and `npm` versions it proposes, and
+  `tools/renovate/.npmrc` sets `min-release-age=7`, so the npm that regenerates the lockfile (Renovate's, which follows
+  `packageManager`, or a maintainer's) only picks transitive versions published at least seven days earlier. The committed
+  lockfile was resolved that way; every one of its packages was published on or before 2026-10-18T19:54Z.
+  `npm ci` does not resolve and is not affected by the setting.
+- Updates: Renovate's `npm` manager is limited to `tools/renovate/package.json` and regenerates the lockfile with each
+  `renovate` or `npm` bump; weekly lock file maintenance (Monday before 06:00) refreshes the transitive packages. Both land
+  as reviewed pull requests that run `make lint-renovate`.
+- Security fixes are exempt from the wait. For a fix newer than seven days, regenerate the lockfile by hand and list the
+  package in the pull request:
+
+  ```text
+  cd tools/renovate
+  npm install --package-lock-only --min-release-age-exclude=<package>
+  make lint-renovate
+  ```
+
+  A routine regeneration is the same command without `--min-release-age-exclude`.
+
+The collection repository runs no Renovate validator of its own today, so FREES-133 needs no change there; if it adds one,
+it should reuse this layout.
+
+### cosign version
+
+`make image-scan` verifies the Grype release signature with cosign 3.1.3 (FREES-135), published 2026-08-06, so it is
+older than the seven-day release age. It is itself a security release: it fixes GHSA-fx35-mq7g-6g98 (high), a
+verification bypass through a public key in a legacy bundle. cosign 3.1.4 (2026-10-20) was not taken: it was under seven
+days old and is not a security release. The binary SHA-256 `4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71`
+was checked against the release `cosign_checksums.txt`, against the digest GitHub reports for the `cosign-linux-amd64` asset,
+and against a fresh download. Renovate updates the version and checksum together. The verification itself, the identity
+constraint and the network it needs are described in [`image.md`](image.md#vulnerability-gate).
+
+### Vulnerability database trust
+
+The Grype vulnerability database is not signed by Anchore. `make image-scan` trusts it through TLS to `grype.anchore.io`
+and a SHA-256 checksum taken from the listing served by the same origin, and limits its age to 120 hours. This detects a
+corrupted download but not a compromised origin. Revisit it if Anchore starts signing databases or listings (FREES-135).
 
 ## Residual risk
 
@@ -116,7 +187,8 @@ no later than 90 days out. The authoritative tables are in
 
 - [ADR 0005](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0005-renovate-version-annotations.md), [ADR 0006](https://github.com/FreeSecDev/ansible-linux-compliance/blob/main/docs/adr/0006-toolchain-selection.md)
 - [`SECURITY.md`](../SECURITY.md) for reporting vulnerabilities
-- Jira: FREES-81 (dependency configuration), FREES-35 (Containerfile, toolbox lock and binary pin managers), FREES-37 (Grype gate)
+- Jira: FREES-81 (dependency configuration), FREES-35 (Containerfile, toolbox lock and binary pin managers), FREES-37 (Grype gate),
+  FREES-133 (Renovate validator lockfile), FREES-135 (Grype gate hardening and release signature)
 
 ## Vulnerability exceptions
 

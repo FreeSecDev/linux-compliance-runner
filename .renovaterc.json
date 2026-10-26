@@ -17,6 +17,7 @@
     "pre-commit",
     "terraform",
     "terraform-version",
+    "npm",
     "custom.regex"
   ],
   "customManagers": [
@@ -63,15 +64,17 @@
     },
     {
       "customType": "regex",
-      "description": "Renovate version used by make lint-renovate",
+      "description": "cosign release version and the SHA-256 of its linux/amd64 binary, pinned together in the Makefile to verify the Grype release signature",
       "managerFilePatterns": [
         "/(^|/)Makefile$/"
       ],
       "matchStrings": [
-        "RENOVATE_VERSION := (?<currentValue>\\S+)"
+        "COSIGN_VERSION := (?<currentValue>\\S+)\\nCOSIGN_SHA256_LINUX_AMD64 := (?<currentDigest>[a-f0-9]{64})"
       ],
-      "depNameTemplate": "renovate",
-      "datasourceTemplate": "npm"
+      "depNameTemplate": "sigstore/cosign",
+      "datasourceTemplate": "github-release-attachments",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
     }
   ],
   "pinDigests": true,
@@ -160,12 +163,13 @@
       "groupName": "toolbox binaries"
     },
     {
-      "description": "The pinned Grype scanner used by make image-scan; it is not shipped in the image",
+      "description": "The pinned Grype scanner used by make image-scan and the cosign that verifies its release signature; neither is shipped in the image",
       "matchManagers": [
         "custom.regex"
       ],
       "matchPackageNames": [
-        "anchore/grype"
+        "anchore/grype",
+        "sigstore/cosign"
       ],
       "groupName": "image scanner"
     },
@@ -177,9 +181,30 @@
       "addLabels": [
         "area/runner"
       ]
+    },
+    {
+      "description": "The Renovate validator tree in tools/renovate (package.json and package-lock.json) used by make lint-renovate; it is not shipped in the image",
+      "matchManagers": [
+        "npm"
+      ],
+      "addLabels": [
+        "ci"
+      ],
+      "groupName": "renovate validator"
     }
   ],
   "pre-commit": {
     "enabled": true
+  },
+  "npm": {
+    "managerFilePatterns": [
+      "/^tools/renovate/package\\.json$/"
+    ],
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": [
+        "before 6am on monday"
+      ]
+    }
   }
 }

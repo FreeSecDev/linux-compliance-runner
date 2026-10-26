@@ -17,6 +17,8 @@
 | OpenTofu and python-build-standalone release versions and checksums in the `Containerfile` | Renovate (`customManagers` regex) |
 | Python tools in the toolbox image (`toolbox/uv.lock`) | Dependabot |
 | Grype version and checksum in the `Makefile` | Renovate (`customManagers` regex) |
+| cosign version and checksum in the `Makefile` (verifies the Grype release signature) | Renovate (`customManagers` regex) |
+| Renovate validator tree (`tools/renovate/package.json`, `package-lock.json`) | Renovate (`npm` manager, lock file maintenance) |
 | Packer plugins, Ansible Galaxy requirements | Not used in this repository |
 
 Renovate Python managers stay disabled, and Renovate also disables the `pypi` and `python-version` datasources and

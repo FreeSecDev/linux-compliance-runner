@@ -1,0 +1,10 @@
+{
+  "name": "linux-compliance-runner-renovate-validator",
+  "private": true,
+  "description": "Pinned Renovate install for make lint-renovate (renovate-config-validator); installed with npm ci --ignore-scripts",
+  "license": "Apache-2.0",
+  "packageManager": "npm@11.19.1",
+  "dependencies": {
+    "renovate": "44.167.5"
+  }
+}
