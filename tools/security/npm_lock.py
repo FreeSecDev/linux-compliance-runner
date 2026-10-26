@@ -10,10 +10,16 @@ check runs before and after that install and fails when:
   ``MAJOR.MINOR.PATCH`` version (a range, tag, URL, git or file reference);
 * the lockfile is not ``lockfileVersion`` 3, belongs to another project, or its
   root entry does not declare exactly the manifest's dependencies;
-* a locked package is linked, has a malformed path or version, is not resolved
-  to its own tarball on :data:`REGISTRY` (``<name>/-/<base>-<version>.tgz``),
-  or lacks a single SHA-512 ``integrity`` hash; bundled packages ship inside
-  the integrity-checked tarball of their parent and need neither;
+* a locked package other than the root has a malformed path (workspace and
+  other non-``node_modules`` paths included) or version, is not resolved to
+  its own tarball on :data:`REGISTRY` (``<name>/-/<base>-<version>.tgz``), or
+  lacks a single SHA-512 ``integrity`` hash; every entry is checked, with no
+  exemption;
+* a locked package carries a key in :data:`REJECTED_ENTRY_KEYS`: ``link``
+  (a symlinked local directory) or ``inBundle``. npm installs an ``inBundle``
+  entry without checking any hash of its own, so marking a package bundled
+  would silently drop its pin; the lockfile has no bundled packages, and a
+  dependency that starts bundling needs a reviewed change to this check;
 * a dependency, optional dependency or required peer dependency of any locked
   package (or of the root) does not resolve to a locked package through the
   ``node_modules`` lookup that npm uses, so npm would have to resolve it;
@@ -67,6 +73,10 @@ LOCK_PATH: Final[re.Pattern[str]] = re.compile(
 )
 INTEGRITY: Final[re.Pattern[str]] = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
 SEGMENT: Final[str] = "node_modules/"
+REJECTED_ENTRY_KEYS: Final[dict[str, str]] = {
+    "link": "linked packages are not allowed",
+    "inBundle": "bundled packages are not allowed: npm installs them without an integrity check",
+}
 
 
 class LockInputError(ValueError):
@@ -141,17 +151,16 @@ def check_entry(path: str, entry: Mapping[str, object]) -> list[str]:
     where = f"package-lock.json: {path}"
     if not LOCK_PATH.fullmatch(path):
         return [f"{where}: malformed package path"]
-    violations: list[str] = []
-    if "link" in entry:
-        violations.append(f"{where}: linked packages are not allowed")
+    violations = [
+        f"{where}: {message}" for key, message in REJECTED_ENTRY_KEYS.items() if key in entry
+    ]
     version = entry.get("version")
+    name = package_name(path, entry)
+    expected: str | None = None
     if not (isinstance(version, str) and LOCKED_VERSION.fullmatch(version)):
         violations.append(f"{where}: version must be an exact semantic version, got {version!r}")
-        return violations
-    if entry.get("inBundle") is True:
-        return violations
-    name = package_name(path, entry)
-    expected = tarball_url(name, version) if NAME.fullmatch(name) else None
+    elif NAME.fullmatch(name):
+        expected = tarball_url(name, version)
     resolved = entry.get("resolved")
     if expected is None or resolved != expected:
         violations.append(f"{where}: resolved must be {expected!r}, got {resolved!r}")

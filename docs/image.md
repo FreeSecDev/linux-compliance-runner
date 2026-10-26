@@ -144,21 +144,27 @@ make image-scan
    cosign verify-blob --bundle checksums.txt.sigstore.json \
      --certificate-identity-regexp '^https://github\.com/anchore/grype/\.github/workflows/release\.yaml@refs/heads/main$' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     --certificate-github-workflow-repository anchore/grype checksums.txt
+     --certificate-github-workflow-repository anchore/grype \
+     --certificate-github-workflow-trigger workflow_dispatch \
+     --certificate-github-workflow-ref refs/heads/main checksums.txt
    ```
 
    So `checksums.txt` must be signed by a Fulcio certificate issued to Grype's own release workflow on `main` in
-   `github.com/anchore/grype` through GitHub Actions OIDC, and the signature must be in the Rekor transparency log (the bundle
-   carries the inclusion proof). A tampered checksums file, another repository or workflow, or another issuer fails the target.
+   `github.com/anchore/grype` through GitHub Actions OIDC, run by `workflow_dispatch` (Grype releases are dispatched from
+   `main`, so the certificate names the branch, not a tag), and the signature must be in the Rekor transparency log (the
+   bundle carries the inclusion proof). A tampered checksums file, another repository, workflow, trigger or ref, or another
+   issuer fails the target.
    Then the SHA-256 pinned in the Makefile (`GRYPE_SHA256_LINUX_AMD64`) must appear verbatim in the verified `checksums.txt`
    and must match the archive; nothing is piped into a shell. The binary must report the pinned version and database schema.
    linux/amd64 only. Renovate updates the version and checksum together (see
    [`dependency-management.md`](dependency-management.md)). If Anchore moves the release to another workflow or ref, the
-   verification fails until `GRYPE_SIGNER_IDENTITY` in the Makefile is reviewed and changed. The signature and checksums are
+   verification fails until `GRYPE_SIGNER_IDENTITY`, `GRYPE_SIGNER_TRIGGER` and `GRYPE_SIGNER_REF` in the Makefile are
+   reviewed and changed. The signature and checksums are
    checked whenever the target installs Grype: on every CI run, and locally the first time for each version (the installed
    binary is then reused from `build/tools/`; `make clean` forces a fresh, verified download).
 
-   **cosign.** `COSIGN_VERSION` (3.1.3) is downloaded the same way as Grype into `build/tools/cosign-<version>/`: the
+   **cosign.** `COSIGN_VERSION` (3.1.4, a security rebuild; see
+   [`dependency-management.md`](dependency-management.md#cosign-version)) is downloaded the same way as Grype into `build/tools/cosign-<version>/`: the
    SHA-256 pinned in the Makefile (`COSIGN_SHA256_LINUX_AMD64`) must appear in the release `cosign_checksums.txt` and match
    the binary, and the binary must report the pinned version. The pinned checksum is cosign's trust anchor (it was also
    compared with the digest GitHub reports for the release asset). cosign runs under `env -i` with only `PATH`, `HOME`,

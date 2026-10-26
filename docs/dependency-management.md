@@ -50,9 +50,9 @@ the npm packages in `tools/renovate/package-lock.json`, come from Dependabot. `.
 entry, so Dependabot opens no routine npm pull requests; those come from Renovate.
 Renovate's `vulnerabilityAlerts` is disabled so the two bots never open competing security pull requests.
 
-One overlap is accepted on purpose: a Dependabot security update to a GitHub Action can land between Renovate's
-scheduled digest updates. Renovate then rebases or closes its own pull request. This keeps security fixes fast without
-waiting for the Renovate schedule.
+One overlap is accepted on purpose: a Dependabot security update to a GitHub Action, or to a package in the npm
+validator tree (`tools/renovate/package-lock.json`), can land between Renovate's scheduled updates. Renovate then
+rebases or closes its own pull request. This keeps security fixes fast without waiting for the Renovate schedule.
 
 A new ecosystem must be assigned to exactly one bot in this table in the same pull request that adds it.
 
@@ -110,16 +110,23 @@ run and ran their install scripts (FREES-133). Renovate is now installed from a 
 - `tools/security/npm_lock.py` runs before the install and fails when anything could be resolved outside the lockfile: a
   manifest dependency that is not an exact `x.y.z` version (ranges, tags, git, URL, file and alias specs), a manifest key
   outside the allow-list (such as `overrides`, `scripts` or another dependency type), a lockfile other than version 3, a
-  root entry that differs from the manifest, a linked package, a package not resolved to its own registry tarball or without
-  one SHA-512 hash, or a dependency, optional dependency or required peer of any locked package that does not resolve to a
-  locked package through npm's `node_modules` lookup. After the install it compares `node_modules/.package-lock.json`, the
+  root entry that differs from the manifest, a package entry that is linked (`link`) or marked bundled (`inBundle`),
+  any non-root entry not resolved to its own registry tarball or without one SHA-512 hash (no entry is exempt), or a
+  dependency, optional dependency or required peer of any locked package that does not resolve to a locked package
+  through npm's `node_modules` lookup. Bundled entries are rejected outright because `npm ci` installs an `inBundle`
+  entry without checking any hash of its own: marking a package bundled and deleting its `resolved` and `integrity`
+  would otherwise drop its pin while `npm ci` still fetched it from the registry. The committed lockfile has no bundled
+  or linked entries and no `bundleDependencies`; a Renovate update that introduces one fails until the check is
+  reviewed and changed. After the install it compares `node_modules/.package-lock.json`, the
   tree npm actually installed, with the committed lockfile and fails on any extra, missing or different package.
   `tests/unit/tools/test_npm_lock.py` runs it on the committed files and on mutated copies, and checks that the Makefile
   installs only through `npm ci --ignore-scripts`.
 - Because install scripts are disabled, Renovate's optional native `re2` module is not built (its install script would
   download an unpinned prebuilt binary). The validator therefore checks regular expressions with JavaScript `RegExp`;
   `RENOVATE_X_IGNORE_RE2=true` selects that engine explicitly instead of printing a stack trace. The hosted Renovate uses
-  RE2, which rejects lookarounds and backreferences, so keep `matchStrings` free of them.
+  RE2, which rejects lookarounds and backreferences, so `tests/unit/tools/test_renovate_config.py` fails on a lookahead,
+  lookbehind, atomic group or backreference in any `matchStrings`, `extractVersionTemplate` or `/.../` pattern in
+  `.renovaterc.json`.
 - Release age: Renovate's `minimumReleaseAge` of seven days gates the `renovate` and `npm` versions it proposes, and
   `tools/renovate/.npmrc` sets `min-release-age=7`, so the npm that regenerates the lockfile (Renovate's, which follows
   `packageManager`, or a maintainer's) only picks transitive versions published at least seven days earlier. The committed
@@ -146,13 +153,22 @@ it should reuse this layout.
 
 ### cosign version
 
-`make image-scan` verifies the Grype release signature with cosign 3.1.3 (FREES-135), published 2026-08-06, so it is
-older than the seven-day release age. It is itself a security release: it fixes GHSA-fx35-mq7g-6g98 (high), a
-verification bypass through a public key in a legacy bundle. cosign 3.1.4 (2026-10-20) was not taken: it was under seven
-days old and is not a security release. The binary SHA-256 `4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71`
-was checked against the release `cosign_checksums.txt`, against the digest GitHub reports for the `cosign-linux-amd64` asset,
-and against a fresh download. Renovate updates the version and checksum together. The verification itself, the identity
-constraint and the network it needs are described in [`image.md`](image.md#vulnerability-gate).
+`make image-scan` verifies the Grype release signature with cosign 3.1.4 (FREES-135), published 2026-10-20, before the
+seven-day release age had passed. It is treated as a security release and is exempt from the wait, as Grype 0.121.0 was:
+
+- 3.1.4 is rebuilt with Go 1.27.3 ("Build releases with 1.27.3") and adds bundle-verification fixes, among them "don't
+  panic on a bundle entry with no hash".
+- Grype 0.121.0 reports 3 critical and 23 high fixable findings in the 3.1.3 binary (built with Go 1.26.4: the Go
+  standard library, `golang.org/x/net` v0.56.0 with GO-2026-6612, `google.golang.org/grpc` v1.82.0 and `golang.org/x/text`
+  v0.38.0), and no critical or high finding in the 3.1.4 binary (one medium).
+- cosign is the binary that anchors trust in the scanner, and it runs on every pull request.
+
+3.1.4 also keeps the fix for GHSA-fx35-mq7g-6g98 (high, a verification bypass through a public key in a legacy bundle)
+that 3.1.3 introduced. The binary SHA-256 `424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa` was checked
+against the release `cosign_checksums.txt`, against the digest GitHub reports for the `cosign-linux-amd64` asset, and
+against a fresh download; the binary reports `v3.1.4` and `go1.27.3`. Renovate updates the version and checksum together.
+The verification itself, the identity constraint and the network it needs are described in
+[`image.md`](image.md#vulnerability-gate).
 
 ### Vulnerability database trust
 

@@ -25,9 +25,11 @@ GRYPE_RELEASE_URL := https://github.com/anchore/grype/releases/download/v$(GRYPE
 GRYPE_CHECKSUMS := grype_$(GRYPE_VERSION)_checksums.txt
 GRYPE_SIGNER_IDENTITY := ^https://github\.com/anchore/grype/\.github/workflows/release\.yaml@refs/heads/main$$
 GRYPE_SIGNER_REPOSITORY := anchore/grype
+GRYPE_SIGNER_TRIGGER := workflow_dispatch
+GRYPE_SIGNER_REF := refs/heads/main
 SIGSTORE_OIDC_ISSUER := https://token.actions.githubusercontent.com
-COSIGN_VERSION := 3.1.3
-COSIGN_SHA256_LINUX_AMD64 := 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+COSIGN_VERSION := 3.1.4
+COSIGN_SHA256_LINUX_AMD64 := 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 COSIGN_RELEASE_URL := https://github.com/sigstore/cosign/releases/download/v$(COSIGN_VERSION)
 COSIGN_DIR := build/tools/cosign-$(COSIGN_VERSION)
 COSIGN := $(COSIGN_DIR)/cosign
@@ -260,6 +262,8 @@ $(GRYPE): | $(COSIGN)
 		--certificate-identity-regexp '$(GRYPE_SIGNER_IDENTITY)' \
 		--certificate-oidc-issuer '$(SIGSTORE_OIDC_ISSUER)' \
 		--certificate-github-workflow-repository '$(GRYPE_SIGNER_REPOSITORY)' \
+		--certificate-github-workflow-trigger '$(GRYPE_SIGNER_TRIGGER)' \
+		--certificate-github-workflow-ref '$(GRYPE_SIGNER_REF)' \
 		$(GRYPE_DIR).download/checksums.txt
 	@if ! grep -Fqx '$(GRYPE_SHA256_LINUX_AMD64)  $(GRYPE_ARCHIVE)' $(GRYPE_DIR).download/checksums.txt; then \
 		printf 'error: the pinned Grype checksum is not in the signed release checksums file\n' >&2; \

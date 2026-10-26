@@ -63,7 +63,6 @@ def lockfile() -> dict[str, Any]:
             "node_modules/native": locked("native", "3.0.0", optional=True),
             "node_modules/peer": locked("peer", "4.0.0"),
             "node_modules/alias-cjs": locked("real-name", "5.0.0", name="real-name"),
-            "node_modules/peer/node_modules/bundled": {"version": "0.1.0", "inBundle": True},
         },
     }
 
@@ -147,10 +146,19 @@ def test_grype_checksums_are_verified_with_an_identity_constraint() -> None:
         re.MULTILINE,
     )
     assert re.search(r"^COSIGN_SHA256_LINUX_AMD64 := [0-9a-f]{64}$", text, re.MULTILINE)
+    for line in (
+        "GRYPE_SIGNER_REPOSITORY := anchore/grype",
+        "GRYPE_SIGNER_TRIGGER := workflow_dispatch",
+        "GRYPE_SIGNER_REF := refs/heads/main",
+    ):
+        assert re.search(rf"^{re.escape(line)}$", text, re.MULTILINE)
     steps = [
         "$(COSIGN_RUN) verify-blob",
         "--certificate-identity-regexp '$(GRYPE_SIGNER_IDENTITY)'",
         "--certificate-oidc-issuer '$(SIGSTORE_OIDC_ISSUER)'",
+        "--certificate-github-workflow-repository '$(GRYPE_SIGNER_REPOSITORY)'",
+        "--certificate-github-workflow-trigger '$(GRYPE_SIGNER_TRIGGER)'",
+        "--certificate-github-workflow-ref '$(GRYPE_SIGNER_REF)'",
         "grep -Fqx '$(GRYPE_SHA256_LINUX_AMD64)  $(GRYPE_ARCHIVE)'",
         "$(GRYPE_RELEASE_URL)/$(GRYPE_ARCHIVE)",
     ]
@@ -252,7 +260,6 @@ def test_manifest_mutation_fails(path: tuple[str, ...], value: object, message: 
             f"{HASH} {OTHER_HASH}",
             "integrity must be one sha512",
         ),
-        (("packages", "node_modules/peer", "inBundle"), "true", "resolved must be"),
         (
             ("packages", "node_modules/tool/node_modules/nested/node_modules/deep"),
             DELETE,
@@ -267,8 +274,6 @@ def test_manifest_mutation_fails(path: tuple[str, ...], value: object, message: 
 )
 def test_lockfile_mutation_fails(path: tuple[str, ...], value: object, message: str) -> None:
     lock = lockfile()
-    if path[-1] == "inBundle":
-        del lock["packages"]["node_modules/peer"]["resolved"]
     set_path(lock, path, value)
     violations = npm_lock.check_lockfile(manifest(), lock)
     assert any(message in violation for violation in violations), violations
@@ -297,11 +302,88 @@ def test_candidates_follow_the_node_lookup_order() -> None:
     assert list(npm_lock.lookup_candidates("", "c")) == ["node_modules/c"]
 
 
-def test_bundled_package_needs_no_tarball_or_hash() -> None:
-    entry = lockfile()["packages"]["node_modules/peer/node_modules/bundled"]
-    assert "resolved" not in entry
-    assert "integrity" not in entry
-    assert npm_lock.check_entry("node_modules/peer/node_modules/bundled", entry) == []
+BUNDLED: Final[str] = (
+    "bundled packages are not allowed: npm installs them without an integrity check"
+)
+
+
+def test_top_level_package_marked_bundled_without_hashes_fails() -> None:
+    lock = lockfile()
+    entry = lock["packages"]["node_modules/@scope/lib"]
+    entry["inBundle"] = True
+    del entry["resolved"]
+    del entry["integrity"]
+    violations = npm_lock.check_lockfile(manifest(), lock)
+    where = "package-lock.json: node_modules/@scope/lib"
+    assert violations == [
+        f"{where}: {BUNDLED}",
+        f"{where}: resolved must be {npm_lock.tarball_url('@scope/lib', '2.0.0-rc.1')!r}, got None",
+        f"{where}: integrity must be one sha512 hash, got None",
+    ]
+
+
+def test_nested_bundled_package_listed_by_its_parent_still_fails() -> None:
+    lock = lockfile()
+    lock["packages"]["node_modules/peer"]["bundleDependencies"] = ["bundled"]
+    lock["packages"]["node_modules/peer/node_modules/bundled"] = {
+        "version": "0.1.0",
+        "inBundle": True,
+    }
+    violations = npm_lock.check_lockfile(manifest(), lock)
+    where = "package-lock.json: node_modules/peer/node_modules/bundled"
+    assert f"{where}: {BUNDLED}" in violations
+    assert f"{where}: integrity must be one sha512 hash, got None" in violations
+
+
+@pytest.mark.parametrize("flag", [True, False, "true", None])
+def test_any_in_bundle_key_fails_even_with_hashes(flag: object) -> None:
+    lock = lockfile()
+    lock["packages"]["node_modules/peer"]["inBundle"] = flag
+    assert npm_lock.check_lockfile(manifest(), lock) == [
+        f"package-lock.json: node_modules/peer: {BUNDLED}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("integrity", "integrity must be one sha512 hash, got None"),
+        (
+            "resolved",
+            "resolved must be 'https://registry.npmjs.org/peer/-/peer-4.0.0.tgz', got None",
+        ),
+        ("link", "linked packages are not allowed"),
+    ],
+)
+def test_every_entry_needs_its_own_pin(change: str, message: str) -> None:
+    lock = lockfile()
+    entry = lock["packages"]["node_modules/peer"]
+    if change == "link":
+        entry["link"] = True
+    else:
+        del entry[change]
+    assert npm_lock.check_lockfile(manifest(), lock) == [
+        f"package-lock.json: node_modules/peer: {message}"
+    ]
+
+
+def test_invalid_version_still_reports_missing_hashes() -> None:
+    entry = {"version": "^4.0.0"}
+    where = "package-lock.json: node_modules/peer"
+    assert npm_lock.check_entry("node_modules/peer", entry) == [
+        f"{where}: version must be an exact semantic version, got '^4.0.0'",
+        f"{where}: resolved must be None, got None",
+        f"{where}: integrity must be one sha512 hash, got None",
+    ]
+
+
+def test_committed_lockfile_has_no_bundled_or_linked_entries() -> None:
+    lock = npm_lock.load_json(PROJECT / "package-lock.json")
+    packages = cast("dict[str, dict[str, object]]", lock["packages"])
+    assert not [path for path, entry in packages.items() if {"inBundle", "link"} & set(entry)]
+    assert all(
+        entry.get("integrity") and entry.get("resolved") for path, entry in packages.items() if path
+    )
 
 
 def test_tarball_url_of_a_scoped_package() -> None:
