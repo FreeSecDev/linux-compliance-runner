@@ -30,7 +30,8 @@ PyPI package, so no separate install is needed.
 | `bootstrap` | implemented | `install` plus tool version check |
 | `install` | implemented | `uv sync --frozen`, installs both git hook types |
 | `format` | implemented | `ruff check --fix` and `ruff format` |
-| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-container`, `lint-renovate` |
+| `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-shell`, `lint-container`, `lint-renovate` |
+| `lint-shell` | implemented | ShellCheck on every tracked `*.sh` (the CodeBuild build script and `tools/aws/image-build.sh`) |
 | `lint-python` | implemented | Ruff lint, Ruff format check, Pylint |
 | `lint-yaml` | implemented | `yamllint --strict` |
 | `lint-actions` | implemented | actionlint |
@@ -42,18 +43,20 @@ PyPI package, so no separate install is needed.
 | `test-unit` | implemented | `pytest tests/unit` |
 | `test-coverage` | implemented | Unit tests with branch coverage, 95% overall, 100% on `tools/` |
 | `docs` | implemented | markdownlint-cli2 and the relative link checker |
-| `clean` | implemented | Removes caches, coverage output and `build/` (the Renovate tree, the cosign and Grype binaries, the Sigstore trust root cache, the database and scan reports) |
+| `clean` | implemented | Removes caches, coverage output and `build/` (the Renovate tree, the cosign, Grype, Syft and crane binaries, the Sigstore trust root cache, the database, scan reports, SBOMs and build records) |
 | `ci` | implemented | `lint typecheck test-coverage security docs` |
 | `lint-renovate` | implemented | Checks that `tools/renovate/package-lock.json` pins every package (`tools/security/npm_lock.py`), installs it into `build/tools/renovate/` with `npm ci --ignore-scripts`, checks the installed tree against the lockfile, then runs `renovate-config-validator --strict --no-global`; needs Node.js 24 and npm 11.19.1 or newer (CI installs Node.js 24.22.1 with `actions/setup-node`). See [`dependency-management.md`](dependency-management.md#renovate-validator-tree) |
 | `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
 | `toolbox-lock-check` | implemented | Fails when `toolbox/uv.lock` does not match `toolbox/pyproject.toml` |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |
-| `aws-bootstrap` | pending FREES-33 | AWS bootstrap |
-| `image-build` | pending FREES-36 | Runner image build on AWS |
-| `image-scan` | implemented | Scans the local test image (`SCAN_IMAGE`, default the smoke tag; run `make image-smoke` first) with the pinned, checksum-verified Grype and a freshly verified vulnerability database, then applies the fail-closed exception gate `tools/security/grype_gate.py`; reports land in `build/image-scan/`. See [`image.md`](image.md#vulnerability-gate) |
+| `aws-bootstrap` | implemented | Points to `make aws-bootstrap` in the collection repository, which owns the AWS account IaC (`infra/account`) including this repository's build resources |
+| `image-build` | implemented | Starts the CodeBuild build of `HEAD` with the AWS credentials in the environment (the `image-build` workflow assumes the build role through OIDC), waits, and verifies the staged digest; writes `build/image-build/build.json`. See [`image-build.md`](image-build.md) |
+| `staging-login`, `staging-logout`, `image-pull`, `image-smoke-staged` | implemented | Log in to (or out of) ECR staging, pull `IMAGE_REF` (a staged `name@sha256:` reference) and check its digest and revision label, run the smoke tests against it |
+| `image-scan` | implemented | Scans the local test image (`SCAN_IMAGE`, default the smoke tag; run `make image-smoke` first) or, with `IMAGE_REF=name@sha256:<digest>`, exactly that registry digest, with the pinned, checksum-verified Grype and a freshly verified vulnerability database, then applies the fail-closed exception gate `tools/security/grype_gate.py`; reports land in `build/image-scan/`. See [`image.md`](image.md#vulnerability-gate) |
 | `grype-expected-config` | implemented | Rewrites `security/grype-expected-config.json` from the last `make image-scan` report (variable fields blanked); used after a Grype bump, and the diff is reviewed |
-| `sbom` | pending FREES-37 | Image SBOM |
-| `sign` | pending FREES-37 | Image signature and SBOM attestation |
+| `sbom` | implemented | SPDX and CycloneDX SBOMs of the registry digest `IMAGE_REF` with the pinned, signature-verified Syft; fails unless the SBOM describes exactly that manifest digest |
+| `image-promote` | implemented | Copies the staged digest to GHCR with the pinned crane (tag `RELEASE_TAG`) and fails unless GHCR serves the same digest |
+| `sign`, `verify-release` | implemented | cosign keyless signature of the GHCR digest (in the workflow only), then verification of the signature and of the provenance and SBOM attestations |
 | `image-smoke` | implemented | Builds `localhost/linux-compliance-runner:smoke` locally with docker or podman (never pushed) and runs `tests/smoke` against it read-only, as UID 10001, without capabilities or network; see [`image.md`](image.md) |
 | `release-check` | pending FREES-84 | Release readiness |
 
@@ -163,7 +166,7 @@ runs; runs on `main` and merge groups are never cancelled. `docs` is part of `ma
 added as a job together with the documentation pipeline.
 
 This repository builds the toolbox runner image, so its own jobs run on `ubuntu-24.04` with a pinned `uv`; the
-collection repository will consume the image by digest once it is published (FREES-35, FREES-36). The merge queue
+collection repository consumes the published GHCR image by digest only (FREES-36, see [`image-build.md`](image-build.md)). The merge queue
 and the `ci-gate` required check are enabled in the repository rules after this workflow is on `main`
 (FREES-29).
 

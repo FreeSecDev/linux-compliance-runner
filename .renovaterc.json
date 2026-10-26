@@ -75,6 +75,48 @@
       "datasourceTemplate": "github-release-attachments",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Syft release version and the SHA-256 of its linux/amd64 archive, pinned together in the Makefile for make sbom",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/"
+      ],
+      "matchStrings": [
+        "SYFT_VERSION := (?<currentValue>\\S+)\\nSYFT_SHA256_LINUX_AMD64 := (?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "anchore/syft",
+      "datasourceTemplate": "github-release-attachments",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "go-containerregistry (crane) release version and the SHA-256 of its Linux x86_64 archive, pinned together in the Makefile for make image-promote",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/"
+      ],
+      "matchStrings": [
+        "CRANE_VERSION := (?<currentValue>\\S+)\\nCRANE_SHA256_LINUX_AMD64 := (?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "google/go-containerregistry",
+      "datasourceTemplate": "github-release-attachments",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Amazon ECR credential helper version in codebuild/build-image.sh; the release is on S3, so Renovate proposes the version and the pull request must also update ECR_LOGIN_SHA256 from the release .sha256 file (the build fails until it does)",
+      "managerFilePatterns": [
+        "/^codebuild/build-image\\.sh$/"
+      ],
+      "matchStrings": [
+        "readonly ECR_LOGIN_VERSION='(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+      ],
+      "depNameTemplate": "awslabs/amazon-ecr-credential-helper",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
     }
   ],
   "pinDigests": true,

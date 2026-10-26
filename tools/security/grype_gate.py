@@ -18,7 +18,12 @@ The gate reads the Grype JSON report of the image and the exceptions file
   :data:`INVARIANTS` (settings that hide findings or weaken matching), which
   no regenerated expected configuration can relax;
 * the vulnerability database is invalid, has another schema, was built in the
-  future or is older than the allowed age.
+  future or is older than the allowed age;
+* with ``--image-reference``, the report is not a registry scan of exactly that
+  ``name@sha256:<digest>`` reference: the scanned input must equal it, the
+  scanned manifest must have that digest and be a single image manifest, and
+  ``--image-id`` must be the same digest. A tag is never accepted, so the scan
+  is bound to the digest that was built and pushed.
 
 A Markdown summary is printed and, with ``--summary``, written to a file.
 Exit status: 0 when the gate passes, 1 when it fails, 2 for usage errors.
@@ -115,6 +120,17 @@ SEARCH_SCOPES: Final[frozenset[str]] = frozenset({"squashed", "all-layers"})
 MISSING: Final[object] = object()
 CLOCK_SKEW: Final[timedelta] = timedelta(minutes=5)
 DIGEST: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}")
+DIGEST_REFERENCE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<name>[a-z0-9][a-z0-9.-]*(?::[0-9]+)?(?:/[a-z0-9][a-z0-9._-]*)+)"
+    r"@(?P<digest>sha256:[0-9a-f]{64})"
+)
+IMAGE_MANIFEST_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+    }
+)
+IMAGE_SOURCE: Final[str] = "image"
 MARKDOWN_SPECIAL: Final[re.Pattern[str]] = re.compile(r"([\\`*_\[\]<>#|~])")
 LINE_BREAKS: Final[re.Pattern[str]] = re.compile(r"\s+")
 
@@ -155,12 +171,22 @@ class Finding:
 
 
 @dataclass(frozen=True, slots=True)
+class ScannedSource:
+    """How the report identifies the scanned image."""
+
+    user_input: str
+    digests: frozenset[str]
+    source_type: str | None
+    manifest_digest: str | None
+    media_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ScanReport:
     """The parts of a Grype JSON report that the gate evaluates."""
 
     grype_version: str
-    image: str
-    image_digests: frozenset[str]
+    source: ScannedSource
     distro: tuple[str, str]
     db_schema: str
     db_built: datetime
@@ -168,6 +194,16 @@ class ScanReport:
     configuration: dict[str, object]
     suppressions: tuple[str, ...]
     findings: tuple[Finding, ...]
+
+    @property
+    def image(self) -> str:
+        """Return the image reference the scan was started with."""
+        return self.source.user_input
+
+    @property
+    def image_digests(self) -> frozenset[str]:
+        """Return every digest under which the report identifies the image."""
+        return self.source.digests
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +216,7 @@ class GateSettings:
     image_id: str
     distro: tuple[str, str]
     expected_configuration: dict[str, object]
+    image_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +437,13 @@ def _image_digests(target: Mapping[str, object]) -> frozenset[str]:
     return frozenset(digest for digest in digests if DIGEST.fullmatch(digest))
 
 
+def _optional_string(container: Mapping[str, object], key: str, where: str) -> str | None:
+    """Return the string at ``key``, ``None`` when it is absent or null."""
+    if container.get(key) is None:
+        return None
+    return _string(container, key, where)
+
+
 def _db_built(status: Mapping[str, object]) -> datetime:
     """Return the timezone-aware build time of the vulnerability database."""
     built = _string(status, "built", "descriptor.db.status")
@@ -426,7 +470,8 @@ def parse_report(document: object) -> ScanReport:
     status = _object(
         _object(descriptor.get("db"), "descriptor.db").get("status"), "descriptor.db.status"
     )
-    target = _object(_object(report.get("source"), "source").get("target"), "source.target")
+    source = _object(report.get("source"), "source")
+    target = _object(source.get("target"), "source.target")
     distro = _object(report.get("distro"), "distro")
     valid = status.get("valid")
     if not isinstance(valid, bool):
@@ -434,8 +479,13 @@ def parse_report(document: object) -> ScanReport:
         raise ReportError(message)
     return ScanReport(
         grype_version=_string(descriptor, "version", "descriptor"),
-        image=_string(target, "userInput", "source.target"),
-        image_digests=_image_digests(target),
+        source=ScannedSource(
+            user_input=_string(target, "userInput", "source.target"),
+            digests=_image_digests(target),
+            source_type=_optional_string(source, "type", "source"),
+            manifest_digest=_optional_string(target, "manifestDigest", "source.target"),
+            media_type=_optional_string(target, "mediaType", "source.target"),
+        ),
         distro=(_string(distro, "name", "distro"), _string(distro, "version", "distro")),
         db_schema=_string(status, "schemaVersion", "descriptor.db.status"),
         db_built=_db_built(status),
@@ -496,9 +546,41 @@ def load_expected_configuration(path: Path) -> dict[str, object]:
     return _object(load_json(path, "expected Grype configuration"), "expected configuration")
 
 
+def reference_failures(report: ScanReport, settings: GateSettings) -> list[str]:
+    """Return why the report is not a scan of exactly the expected digest reference."""
+    reference = settings.image_reference
+    if reference is None:
+        return []
+    match = DIGEST_REFERENCE.fullmatch(reference)
+    if match is None:
+        message = (
+            f"--image-reference {reference!r} is not a name@sha256:<digest> reference; "
+            "a tag is never accepted"
+        )
+        return [message]
+    digest = match.group("digest")
+    failures: list[str] = []
+    if settings.image_id != digest:
+        failures.append(f"--image-id {settings.image_id} is not the digest of {reference}")
+    scanned = report.source
+    if scanned.source_type != IMAGE_SOURCE:
+        failures.append(f"report source type is {scanned.source_type!r}, expected {IMAGE_SOURCE!r}")
+    if report.image != reference:
+        failures.append(f"report scanned {report.image!r}, expected exactly {reference!r}")
+    if scanned.manifest_digest != digest:
+        failures.append(
+            f"report scanned manifest {scanned.manifest_digest}, expected the built digest {digest}"
+        )
+    if scanned.media_type not in IMAGE_MANIFEST_TYPES:
+        failures.append(
+            f"report scanned media type {scanned.media_type!r}, expected a single image manifest"
+        )
+    return failures
+
+
 def provenance_failures(report: ScanReport, settings: GateSettings, now: datetime) -> list[str]:
     """Return why the report cannot be trusted as a scan of the expected image."""
-    failures: list[str] = []
+    failures: list[str] = reference_failures(report, settings)
     if report.grype_version != settings.grype_version:
         failures.append(
             f"report was produced by Grype {report.grype_version}, "
@@ -636,6 +718,8 @@ def render_summary(
     lines = [f"# Image vulnerability gate: {verdict}", "", "| Item | Value |", "|---|---|"]
     lines.append(f"| Gate run | {_timestamp(now)} |")
     lines.append(f"| Expected image | {_cell(settings.image_id)} |")
+    if settings.image_reference is not None:
+        lines.append(f"| Expected reference | {_cell(settings.image_reference)} |")
     if report is not None:
         age = (now - report.db_built).total_seconds() / 3600
         counts = Counter(finding.severity for finding in report.findings)
@@ -643,6 +727,7 @@ def render_summary(
         lines.extend(
             [
                 f"| Scanned image | {_cell(report.image)} |",
+                f"| Scanned manifest | {_cell(report.source.manifest_digest or 'not reported')} |",
                 f"| Distribution | {_cell(' '.join(report.distro))} |",
                 f"| Grype | {_cell(report.grype_version)} |",
                 (
@@ -685,6 +770,7 @@ def _settings(arguments: argparse.Namespace, expected: dict[str, object]) -> Gat
         image_id=arguments.image_id,
         distro=(arguments.distro, arguments.distro_version),
         expected_configuration=expected,
+        image_reference=arguments.image_reference,
     )
 
 
@@ -733,6 +819,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-db-age-hours", type=_positive_int, required=True, help="Maximum DB age in hours."
     )
     parser.add_argument("--image-id", required=True, help="Image ID or digest that was scanned.")
+    parser.add_argument(
+        "--image-reference",
+        help="Require a registry scan of exactly this name@sha256:<digest> reference.",
+    )
     parser.add_argument("--distro", required=True, help="Expected distribution name.")
     parser.add_argument(
         "--distro-version", required=True, help="Expected distribution release of the image."
