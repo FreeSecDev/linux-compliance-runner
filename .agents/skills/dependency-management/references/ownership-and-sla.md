@@ -12,7 +12,7 @@
 | Python (pip, uv) versions and security updates, including hadolint (`hadolint-bin`) | Dependabot |
 | `setup-uv` `version:` input | Renovate |
 | Python runtime (`.python-version`, `setup-python`) | Manual pull request |
-| Security updates for Python and GitHub Actions | Dependabot security updates |
+| Security updates for Python, GitHub Actions and the npm validator tree (`tools/renovate/package-lock.json`) | Dependabot security updates |
 | Security fixes for images, apk pins, hooks, providers | Renovate schedule (documented residual risk) |
 | OpenTofu and python-build-standalone release versions and checksums in the `Containerfile` | Renovate (`customManagers` regex) |
 | Python tools in the toolbox image (`toolbox/uv.lock`) | Dependabot |

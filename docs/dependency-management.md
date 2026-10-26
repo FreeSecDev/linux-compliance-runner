@@ -34,7 +34,7 @@ The configuration files are committed, but the bots are not confirmed active:
 | Terraform and OpenTofu providers | Renovate | Provider lock handling and version constraints |
 | `astral-sh/setup-uv` `version:` input (the uv tool version) | Renovate | Read by the `github-actions` manager; Dependabot does not manage it |
 | Python runtime version (`.python-version`, `setup-python` inputs) | Manual pull request | A runtime change needs full testing; Renovate disables the `python-version` datasource and the `actions/python-versions` package that `setup-python` resolves through |
-| Security updates for ecosystems in GitHub's dependency graph (Python `uv`, GitHub Actions) | Dependabot | GitHub security updates are enabled for the repository; Renovate's `vulnerabilityAlerts` is disabled |
+| Security updates for ecosystems in GitHub's dependency graph (Python `uv`, GitHub Actions, and npm in `tools/renovate/package-lock.json`) | Dependabot | GitHub security updates are enabled for the repository; Renovate's `vulnerabilityAlerts` is disabled |
 | Security fixes for container digests, `apk` pins, pre-commit hooks and OpenTofu providers | Renovate (scheduled) | No advisory-driven pull requests exist for these; see residual risk below |
 
 Renovate runs only an explicit allow-list of managers (`github-actions`, `dockerfile`, `pre-commit`, `terraform`, `terraform-version`, `npm`, `custom.regex`), none of which is a Python manager. Two enabled managers could
@@ -45,8 +45,9 @@ enabled explicitly; listing it in `enabledManagers` alone does not turn it on. P
 run as local hooks through `uv`, so their versions live only in `pyproject.toml` and `uv.lock`, which Dependabot owns.
 
 Dependabot version updates cover the `uv` ecosystem only. GitHub's Dependabot security updates are enabled for the whole
-repository, so security pull requests for ecosystems in GitHub's dependency graph, Python (`uv`) and GitHub Actions,
-come from Dependabot.
+repository, so security pull requests for ecosystems in GitHub's dependency graph, Python (`uv`), GitHub Actions and
+the npm packages in `tools/renovate/package-lock.json`, come from Dependabot. `.github/dependabot.yml` has no `npm`
+entry, so Dependabot opens no routine npm pull requests; those come from Renovate.
 Renovate's `vulnerabilityAlerts` is disabled so the two bots never open competing security pull requests.
 
 One overlap is accepted on purpose: a Dependabot security update to a GitHub Action can land between Renovate's
@@ -127,7 +128,9 @@ run and ran their install scripts (FREES-133). Renovate is now installed from a 
 - Updates: Renovate's `npm` manager is limited to `tools/renovate/package.json` and regenerates the lockfile with each
   `renovate` or `npm` bump; weekly lock file maintenance (Monday before 06:00) refreshes the transitive packages. Both land
   as reviewed pull requests that run `make lint-renovate`.
-- Security fixes are exempt from the wait. For a fix newer than seven days, regenerate the lockfile by hand and list the
+- Security fixes are exempt from the wait. Dependabot security updates cover the lockfile (it is in GitHub's dependency
+  graph), so an advisory for a locked package produces a Dependabot pull request without the seven-day wait; like every
+  update it must pass `make lint-renovate`. Without such a pull request, regenerate the lockfile by hand and list the
   package in the pull request:
 
   ```text
