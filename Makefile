@@ -6,7 +6,15 @@ MAKEFLAGS += --warn-undefined-variables --no-builtin-rules
 
 UV := $(shell command -v uv 2>/dev/null)
 RUN := uv run --frozen
-RENOVATE_VERSION := 44.167.5
+RENOVATE_PROJECT := tools/renovate
+RENOVATE_DIR := build/tools/renovate
+RENOVATE_VALIDATOR := $(RENOVATE_DIR)/node_modules/.bin/renovate-config-validator
+NODE_MINIMUM_MAJOR := 24
+NPM_MINIMUM_VERSION := 11.19.1
+NPM_CI := npm ci --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none \
+	--allow-file=none --allow-directory=none
+NPM_LOCK_CHECK = $(RUN) python -m tools.security.npm_lock --manifest $(RENOVATE_PROJECT)/package.json \
+	--lockfile $(RENOVATE_PROJECT)/package-lock.json
 SMOKE_IMAGE := localhost/linux-compliance-runner:smoke
 GRYPE_VERSION := 0.121.0
 GRYPE_SHA256_LINUX_AMD64 := 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
@@ -14,6 +22,21 @@ GRYPE_DB_SCHEMA := 6
 GRYPE_DB_MAX_AGE_HOURS := 120
 GRYPE_DB_URL := https://grype.anchore.io/databases/v$(GRYPE_DB_SCHEMA)
 GRYPE_RELEASE_URL := https://github.com/anchore/grype/releases/download/v$(GRYPE_VERSION)
+GRYPE_CHECKSUMS := grype_$(GRYPE_VERSION)_checksums.txt
+GRYPE_SIGNER_IDENTITY := ^https://github\.com/anchore/grype/\.github/workflows/release\.yaml@refs/heads/main$$
+GRYPE_SIGNER_REPOSITORY := anchore/grype
+GRYPE_SIGNER_TRIGGER := workflow_dispatch
+GRYPE_SIGNER_REF := refs/heads/main
+SIGSTORE_OIDC_ISSUER := https://token.actions.githubusercontent.com
+COSIGN_VERSION := 3.1.4
+COSIGN_SHA256_LINUX_AMD64 := 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+COSIGN_RELEASE_URL := https://github.com/sigstore/cosign/releases/download/v$(COSIGN_VERSION)
+COSIGN_DIR := build/tools/cosign-$(COSIGN_VERSION)
+COSIGN := $(COSIGN_DIR)/cosign
+SIGSTORE_TUF_DIR := build/sigstore-tuf
+COSIGN_ENV_PASSTHROUGH := PATH HOME TMPDIR HTTPS_PROXY https_proxy NO_PROXY no_proxy
+COSIGN_RUN = env -i $(foreach name,$(COSIGN_ENV_PASSTHROUGH),$(name)="$${$(name)-}") \
+	TUF_ROOT='$(CURDIR)/$(SIGSTORE_TUF_DIR)' $(COSIGN)
 GRYPE_ARCHIVE := grype_$(GRYPE_VERSION)_linux_amd64.tar.gz
 GRYPE_DIR := build/tools/grype-$(GRYPE_VERSION)
 GRYPE := $(GRYPE_DIR)/grype
@@ -58,7 +81,7 @@ Formatting and linting
   lint-actions          actionlint for GitHub workflows
   lint-repo             Repository source rules (document start, comments, banned modules)
   lint-skills           Validate agent skills under .agents/skills
-  lint-renovate         renovate-config-validator (pinned Renovate, needs Node.js 24)
+  lint-renovate         Lockfile pin check, npm ci --ignore-scripts of tools/renovate, then renovate-config-validator
   lint-container        hadolint on every Containerfile and a check that toolbox/uv.lock matches its pyproject
   lint-iac              [pending FREES-30] OpenTofu validation and Checkov
 
@@ -120,14 +143,26 @@ format: require-uv
 
 lint: lint-repo lint-skills lint-python lint-yaml lint-actions lint-container lint-renovate
 
-lint-renovate:
+lint-renovate: require-uv
 	@node_major="$$(node --version 2>/dev/null | sed -e 's/^v//' -e 's/\..*//')"; \
-	if [ -z "$$node_major" ] || [ "$$node_major" -lt 24 ]; then \
-		printf 'error: lint-renovate needs Node.js 24 or newer on PATH (found: %s); Renovate %s does not run on older versions\n' \
-			"$${node_major:-none}" '$(RENOVATE_VERSION)' >&2; \
+	if [ -z "$$node_major" ] || [ "$$node_major" -lt $(NODE_MINIMUM_MAJOR) ]; then \
+		printf 'error: lint-renovate needs Node.js %s or newer on PATH (found: %s); the pinned Renovate does not run on older versions\n' \
+			'$(NODE_MINIMUM_MAJOR)' "$${node_major:-none}" >&2; \
+		exit 1; \
+	fi; \
+	npm_version="$$(npm --version 2>/dev/null || true)"; \
+	if [ -z "$$npm_version" ] || ! printf '%s\n' '$(NPM_MINIMUM_VERSION)' "$$npm_version" | sort --version-sort --check=quiet; then \
+		printf 'error: lint-renovate needs npm %s or newer on PATH (found: %s) for the npm ci source restrictions\n' \
+			'$(NPM_MINIMUM_VERSION)' "$${npm_version:-none}" >&2; \
 		exit 1; \
 	fi
-	npx --yes --package renovate@$(RENOVATE_VERSION) renovate-config-validator --strict --no-global .renovaterc.json
+	$(NPM_LOCK_CHECK)
+	rm -rf $(RENOVATE_DIR)
+	mkdir -p $(RENOVATE_DIR)
+	cp $(RENOVATE_PROJECT)/package.json $(RENOVATE_PROJECT)/package-lock.json $(RENOVATE_PROJECT)/.npmrc $(RENOVATE_DIR)/
+	cd $(RENOVATE_DIR) && $(NPM_CI)
+	$(NPM_LOCK_CHECK) --installed $(RENOVATE_DIR)/node_modules/.package-lock.json
+	RENOVATE_X_IGNORE_RE2=true $(RENOVATE_VALIDATOR) --strict --no-global .renovaterc.json
 
 lint-python: require-uv
 	$(RUN) ruff check .
@@ -192,20 +227,49 @@ require-container-engine:
 		exit 1; \
 	fi
 
-$(GRYPE):
+$(COSIGN):
+	@if [ "$$(uname -s)/$$(uname -m)" != Linux/x86_64 ]; then \
+		printf 'error: the pinned cosign download is linux/amd64 only\n' >&2; \
+		exit 1; \
+	fi
+	rm -rf $(COSIGN_DIR).download
+	mkdir -p $(COSIGN_DIR).download
+	$(CURL) --max-time 120 --output $(COSIGN_DIR).download/cosign_checksums.txt $(COSIGN_RELEASE_URL)/cosign_checksums.txt
+	$(CURL) --max-time 600 --output $(COSIGN_DIR).download/cosign-linux-amd64 $(COSIGN_RELEASE_URL)/cosign-linux-amd64
+	@if ! grep -Fqx '$(COSIGN_SHA256_LINUX_AMD64)  cosign-linux-amd64' $(COSIGN_DIR).download/cosign_checksums.txt; then \
+		printf 'error: the pinned cosign checksum is not in the release checksums file\n' >&2; \
+		exit 1; \
+	fi
+	cd $(COSIGN_DIR).download && \
+		printf '%s  %s\n' '$(COSIGN_SHA256_LINUX_AMD64)' cosign-linux-amd64 | sha256sum --check --strict -
+	chmod 0755 $(COSIGN_DIR).download/cosign-linux-amd64
+	test "$$($(COSIGN_DIR).download/cosign-linux-amd64 version --json | jq -r .gitVersion)" = 'v$(COSIGN_VERSION)'
+	install -D -m 0755 $(COSIGN_DIR).download/cosign-linux-amd64 $(COSIGN)
+	rm -rf $(COSIGN_DIR).download
+
+$(GRYPE): | $(COSIGN)
 	@if [ "$$(uname -s)/$$(uname -m)" != Linux/x86_64 ]; then \
 		printf 'error: the pinned Grype download is linux/amd64 only\n' >&2; \
 		exit 1; \
 	fi
 	rm -rf $(GRYPE_DIR).download
-	mkdir -p $(GRYPE_DIR).download
-	$(CURL) --max-time 120 --output $(GRYPE_DIR).download/checksums.txt \
-		$(GRYPE_RELEASE_URL)/grype_$(GRYPE_VERSION)_checksums.txt
-	$(CURL) --max-time 600 --output $(GRYPE_DIR).download/$(GRYPE_ARCHIVE) $(GRYPE_RELEASE_URL)/$(GRYPE_ARCHIVE)
+	mkdir -p $(GRYPE_DIR).download $(SIGSTORE_TUF_DIR)
+	$(CURL) --max-time 120 --output $(GRYPE_DIR).download/checksums.txt $(GRYPE_RELEASE_URL)/$(GRYPE_CHECKSUMS)
+	$(CURL) --max-time 120 --output $(GRYPE_DIR).download/checksums.txt.sigstore.json \
+		$(GRYPE_RELEASE_URL)/$(GRYPE_CHECKSUMS).sigstore.json
+	$(COSIGN_RUN) verify-blob \
+		--bundle $(GRYPE_DIR).download/checksums.txt.sigstore.json \
+		--certificate-identity-regexp '$(GRYPE_SIGNER_IDENTITY)' \
+		--certificate-oidc-issuer '$(SIGSTORE_OIDC_ISSUER)' \
+		--certificate-github-workflow-repository '$(GRYPE_SIGNER_REPOSITORY)' \
+		--certificate-github-workflow-trigger '$(GRYPE_SIGNER_TRIGGER)' \
+		--certificate-github-workflow-ref '$(GRYPE_SIGNER_REF)' \
+		$(GRYPE_DIR).download/checksums.txt
 	@if ! grep -Fqx '$(GRYPE_SHA256_LINUX_AMD64)  $(GRYPE_ARCHIVE)' $(GRYPE_DIR).download/checksums.txt; then \
-		printf 'error: the pinned Grype checksum is not in the release checksums file\n' >&2; \
+		printf 'error: the pinned Grype checksum is not in the signed release checksums file\n' >&2; \
 		exit 1; \
 	fi
+	$(CURL) --max-time 600 --output $(GRYPE_DIR).download/$(GRYPE_ARCHIVE) $(GRYPE_RELEASE_URL)/$(GRYPE_ARCHIVE)
 	cd $(GRYPE_DIR).download && \
 		printf '%s  %s\n' '$(GRYPE_SHA256_LINUX_AMD64)' '$(GRYPE_ARCHIVE)' | sha256sum --check --strict - && \
 		tar -xzf $(GRYPE_ARCHIVE) grype

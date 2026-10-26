@@ -103,6 +103,7 @@ INVARIANTS: Final[tuple[tuple[tuple[str, ...], object], ...]] = (
     (("platform",), ""),
     (("default-image-pull-source",), ""),
     (("by-cve",), False),
+    (("search", "indexed-archives"), True),
     (("match", "stock", "using-cpes"), True),
     (("match", "jvm", "using-cpes"), True),
     (("db", "auto-update"), False),
