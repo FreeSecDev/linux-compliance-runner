@@ -14,11 +14,14 @@ The AWS resources are code in the collection repository (`infra/account`, files 
 ```text
 push to main (image inputs changed) or workflow_dispatch on main
   job build   (environment release, contents: read, id-token: write)
-    OIDC -> role freesecdev-gha-linux-compliance-runner-build
-    make image-build        CodeBuild project freesecdev-linux-compliance-runner builds the commit with
-                            rootless Buildah and pushes <commit>-<build number> to ECR staging;
-                            the workflow waits and verifies commit, exported digest and the ECR record
+    OIDC -> role freesecdev-gha-linux-compliance-runner-build (keys passed only to AWS steps)
+    make image-build        CodeBuild project freesecdev-linux-compliance-runner: the inline gate in the
+                            collection stack clones main, requires the commit to be on main, checks it
+                            out, and runs codebuild/build-image.sh, which builds with rootless Buildah
+                            and pushes <commit>-<build number> to ECR staging; the workflow waits and
+                            verifies the built commit, exported digest and the ECR record
     make image-pull         docker pull <staging>@sha256:..., revision label must equal the commit
+    make staging-logout     no credential of any kind is left for the next step
     make image-smoke-staged smoke tests against that digest
     make image-scan         Grype scans registry:<staging>@sha256:..., gate bound to the digest
     make sbom               Syft SPDX and CycloneDX SBOMs of the same digest
@@ -37,22 +40,37 @@ smoke tests, vulnerability gate and SBOM all passed, and the run fails if signin
 ## Build in AWS
 
 - **Service:** CodeBuild project `freesecdev-linux-compliance-runner` in `eu-west-1`, `BUILD_GENERAL1_MEDIUM`
-  (4 vCPU, 7 GB), at most one concurrent build, 45-minute build timeout and 15-minute queue timeout. The workflow
-  stops the build itself after 50 minutes (`IMAGE_BUILD_TIMEOUT_MINUTES`) and the job times out after 90.
-- **Source:** the public GitHub repository at the exact commit of the workflow run (`--source-version <sha>`). The
-  build script refuses to run when CodeBuild's resolved commit differs from `EXPECTED_COMMIT`, and the workflow checks
-  `resolvedSourceVersion` again. The build specification is [`codebuild/buildspec.yml`](../codebuild/buildspec.yml) and
-  the steps are [`codebuild/build-image.sh`](../codebuild/build-image.sh), both reviewed in this repository.
+  (4 vCPU, 7 GB), at most one concurrent build.
+  - **Timeouts:** 10-minute queue timeout and 40-minute build timeout; the gate also stops the clone after 5 minutes
+    and the build script after 35.
+  - **Workflow side:** it stops the build itself after 55 minutes (`IMAGE_BUILD_TIMEOUT_MINUTES`). That is longer
+    than queue plus build, and inside the 1-hour role session. It then assumes the role again for registry access.
+    The job times out after 100 minutes.
+- **The gate, which decides what is built:** the project has no source. Its buildspec is inline in the collection
+  repository's `infra/account/image_build.tf`, and the role cannot override it (see
+  [IAM restricts overrides](#iam-restricts-overrides)). The gate:
+  1. validates `EXPECTED_COMMIT` (40 hex characters) and `BUILD_DATE`;
+  2. clones this public repository's `main` without any credential;
+  3. requires `git merge-base --is-ancestor "$EXPECTED_COMMIT" origin/main`;
+  4. checks out exactly that commit;
+  5. only then runs [`codebuild/build-image.sh`](../codebuild/build-image.sh) from it, with `IMAGE_SOURCE_DIR`
+     pointing at the checkout.
+
+  A fork pull request head, another branch or an unknown commit is refused. The script checks that the checkout's
+  `HEAD` is `EXPECTED_COMMIT`, and the workflow checks the exported `BUILT_COMMIT` again.
 - **Builder:** `quay.io/buildah/stable` pinned by index digest (`sha256:7c2b6052...`, Buildah 1.43.5, the immutable
   release tag of 2026-10-19). The script checks the Buildah version.
 - **Rootless:** Buildah runs as the unprivileged `build` user of that image in a user namespace (`buildah info`
   must report `rootless=true`), with chroot isolation and fuse-overlayfs storage. User namespaces need CodeBuild
   privileged mode; an unprivileged container fails with `unshare(CLONE_NEWUSER): Operation not permitted` (tested
   locally with Docker 29 on 2026-10-26). See ADR 0002 for why privileged mode is accepted.
-- **Inputs:** the Containerfile pins the base by digest and every tool by version and checksum. The docker.io base is
-  pulled through the digest-only mirror `public.ecr.aws/docker/library` (Docker Hub rate limits shared CodeBuild
-  addresses); a mirror can only serve the pinned digest. The Amazon ECR credential helper 0.12.0 is downloaded and
-  checked against its pinned SHA-256 before use. No secret or token is passed to the build.
+- **Inputs:** the Containerfile pins the base by digest and every tool by version and checksum.
+  - The docker.io base is pulled through `public.ecr.aws/docker/library` with `pull-from-mirror = "digest-only"`,
+    because Docker Hub rate-limits shared CodeBuild addresses. The control is the digest pin of every `FROM`, not
+    the mirror: content is verified against the digest whichever registry serves it, and a tag pull would bypass the
+    mirror.
+  - The Amazon ECR credential helper 0.12.0 is downloaded and checked against its pinned SHA-256 before use.
+  - No secret or token is passed to the build.
 - **Output:** a Docker v2 image manifest (Docker format keeps the Containerfile `SHELL` for `RUN`, as in the CI test
   build) pushed to the private ECR repository `linux-compliance-runner-staging` with the immutable tag
   `<commit>-<build number>`. The build exports `IMAGE_DIGEST`, `IMAGE_TAG` and `IMAGE_REFERENCE`.
@@ -63,9 +81,10 @@ after the push.
 
 ## Digest verification
 
-`tools/aws/image-build.sh` (run by `make image-build`) fails unless:
+`tools/aws/image-build.sh` (run by `make image-build`) starts the build with only the two environment variables
+the role may override, `EXPECTED_COMMIT` and `BUILD_DATE`. It fails unless:
 
-- CodeBuild reports exactly this build ID, status `SUCCEEDED` and `resolvedSourceVersion` equal to the commit;
+- CodeBuild reports exactly this build ID and status `SUCCEEDED`, and the exported `BUILT_COMMIT` equals the commit;
 - `IMAGE_DIGEST` is `sha256:<64 hex>`, `IMAGE_TAG` is `<commit>-<build number>` and `IMAGE_REFERENCE` is
   `<staging repository>@<digest>`, each exported exactly once;
 - `aws ecr describe-images` for that digest returns one image, with that digest, the tag, and the Docker v2 manifest
@@ -75,8 +94,9 @@ On failure it prints the tail of the build log. If the run is interrupted or tim
 record `build/image-build/build.json` holds the commit, build ID and number, builder image, staged tag, digest,
 reference, push time and size.
 
-`make image-pull` then pulls the digest reference, requires the engine to list it in `RepoDigests` and requires the
-`org.opencontainers.image.revision` label to equal the checked-out commit.
+`make image-pull` then pulls the digest reference, requires the engine to list it in `RepoDigests`, and requires
+the `org.opencontainers.image.revision` label to equal the checked-out commit. The label comes from the same build
+inputs, so this is a consistency check, not a proof; the proof that `main` was built is the gate.
 
 ## Scan bound to the digest
 
@@ -137,14 +157,42 @@ the signature and attestations above before adopting a new digest.
 
 | Where | Credential | Lifetime |
 |---|---|---|
-| GitHub to AWS | OIDC web identity for `freesecdev-gha-linux-compliance-runner-build`, trusted only for the `release` environment of this repository through `image-build.yml` on `main` | up to 1 hour (build job), 15 minutes (publish job) |
-| Runner to ECR | `aws ecr get-login-password` token in the runner's Docker config, removed with `docker logout` at the end of each job | 12 hours, runner discarded after the job |
+| GitHub to AWS | OIDC web identity for `freesecdev-gha-linux-compliance-runner-build`, trusted only for the `release` environment of this repository through `image-build.yml` on `main`. `configure-aws-credentials` runs with `output-env-credentials: false`, and the keys are passed only to the `make image-build` and `make staging-login` steps | 1 hour for the build, then 15 minutes for registry access |
+| Runner to ECR | `aws ecr get-login-password` token in the runner's Docker config. It is removed before the smoke tests and at the end of each job. Grype, Syft and crane see only this pull token, never AWS keys | 12 hours, runner discarded after the job |
 | Runner to GHCR | the job's `GITHUB_TOKEN` (`packages: write`) | the job |
 | CodeBuild to ECR | the CodeBuild service role through the ECR credential helper | the build |
 | Signing | Fulcio certificate for the workflow identity, logged in Rekor | minutes |
 
 There are no long-lived keys. Pull requests and forks cannot run this workflow with AWS access, because the role
 trusts only the `release` environment, which accepts `main` only.
+
+The zizmor `undocumented-permissions` audit wants an explanatory comment on each `id-token: write`. YAML comments
+are banned in this repository (AGENTS.md rule 7), so `.github/zizmor.yml` ignores exactly those two lines. A unit
+test fails if the ignores point at any other line. The permissions are explained here:
+
+- `id-token: write` in `build` requests the OIDC token for the build role;
+- in `publish`, the same permission serves the build role (ECR pull), cosign keyless signing and the attestations;
+- `packages: write` pushes the image, its signature and its attestations to GHCR;
+- `attestations: write` creates the attestations.
+
+### IAM restricts overrides
+
+`codebuild:StartBuild` lets a caller override the buildspec, source, image, privileged mode, compute type,
+environment variables, service role, cache, logs and more. IAM can restrict this through the `StartBuild` condition
+keys. The build role, in the collection stack, has:
+
+- one Deny per key, 26 in total;
+- a Deny that allows only the `EXPECTED_COMMIT` and `BUILD_DATE` environment variables.
+
+Two overrides have no condition key:
+
+- `sourceVersion`, which is irrelevant here, because the project has no source and the gate builds only `main`
+  commits;
+- `timeoutInMinutesOverride`, which is a cost risk only, because the gate's own `timeout` ends the build after about
+  41 minutes.
+
+`debugSessionEnabled` is inert, because the service role has no `ssmmessages:*` permission. Collection ADR 0014
+lists the keys.
 
 ## Running it
 
@@ -163,6 +211,7 @@ credentials step.
 
 - linux/amd64 only.
 - The ECR credential helper's checksum comes from the same S3 origin as the binary (TLS trust only).
-- A privileged CodeBuild container is needed for rootless Buildah; see ADR 0002.
+- A privileged CodeBuild container is needed for rootless Buildah; see ADR 0002. Owner acceptance of the Checkov
+  exemption is pending in collection ADR 0014.
 - The first GHCR push creates the package; its visibility follows the organisation's package settings and may need
   to be set to public once in the package settings.

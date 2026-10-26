@@ -3,4 +3,4 @@ rules:
   undocumented-permissions:
     ignore:
       - image-build.yml:35
-      - image-build.yml:114
+      - image-build.yml:146

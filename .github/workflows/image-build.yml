@@ -28,7 +28,7 @@ jobs:
     name: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 100
     environment: release
     permissions:
       contents: read
@@ -46,14 +46,22 @@ jobs:
         with:
           version: 0.13.1
           enable-cache: false
-      - name: Assume the image build role through OIDC
+      - name: Assume the image build role through OIDC for the build
+        id: aws-build
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: image-build-${{ github.run_id }}
           role-duration-seconds: 3600
+          output-env-credentials: false
+          output-credentials: true
       - name: Build the image in AWS CodeBuild and verify the staged digest
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ steps.aws-build.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws-build.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws-build.outputs.aws-session-token }}
         run: make image-build
       - name: Record the staged digest
         id: record
@@ -62,16 +70,40 @@ jobs:
           tag="$(jq -er '.staging.tag' build/image-build/build.json)"
           printf 'staged=%s\ntag=%s\n' "$staged" "$tag" >> "$GITHUB_OUTPUT"
           printf '## Staged image\n\n- reference: %s\n- tag: %s\n' "$staged" "$tag" >> "$GITHUB_STEP_SUMMARY"
-      - name: Log in to the ECR staging registry
+      - name: Assume the image build role again for registry access
+        id: aws-pull
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: image-pull-${{ github.run_id }}
+          role-duration-seconds: 900
+          output-env-credentials: false
+          output-credentials: true
+      - name: Log in to the ECR staging registry to pull
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ steps.aws-pull.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws-pull.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws-pull.outputs.aws-session-token }}
         run: make staging-login
       - name: Pull the staged digest and check its revision label
         env:
           IMAGE_REF: ${{ steps.record.outputs.staged }}
         run: make image-pull
-      - name: Run the smoke tests against the staged digest
+      - name: Log out of the ECR staging registry before the smoke tests
+        run: make staging-logout
+      - name: Run the smoke tests against the staged digest without any credential
         env:
           IMAGE_REF: ${{ steps.record.outputs.staged }}
         run: make image-smoke-staged
+      - name: Log in to the ECR staging registry to scan
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ steps.aws-pull.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws-pull.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws-pull.outputs.aws-session-token }}
+        run: make staging-login
       - name: Scan exactly the staged digest with the pinned Grype and apply the exception gate
         id: scan
         env:
@@ -100,7 +132,7 @@ jobs:
           retention-days: 90
       - name: Log out of the ECR staging registry
         if: ${{ always() }}
-        run: docker logout "$(make --no-print-directory -s print-staging-registry)"
+        run: make staging-logout
 
   publish:
     name: publish
@@ -125,13 +157,21 @@ jobs:
           name: image-build
           path: build/
       - name: Assume the image build role through OIDC to read the staged digest
+        id: aws-pull
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: image-publish-${{ github.run_id }}
           role-duration-seconds: 900
+          output-env-credentials: false
+          output-credentials: true
       - name: Log in to the ECR staging registry
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ steps.aws-pull.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws-pull.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws-pull.outputs.aws-session-token }}
         run: make staging-login
       - name: Log in to GHCR
         env:
@@ -142,6 +182,8 @@ jobs:
           IMAGE_REF: ${{ needs.build.outputs.staged }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
         run: make image-promote
+      - name: Log out of the ECR staging registry after the copy
+        run: make staging-logout
       - name: Record the release digest
         id: release
         run: |
@@ -189,4 +231,4 @@ jobs:
         if: ${{ always() }}
         run: |
           docker logout ghcr.io
-          docker logout "$(make --no-print-directory -s print-staging-registry)"
+          make staging-logout

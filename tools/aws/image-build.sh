@@ -62,7 +62,6 @@ stop_unfinished_build() {
 start_build() {
   build_id="$(aws codebuild start-build \
     --project-name "${project}" \
-    --source-version "${commit}" \
     --environment-variables-override \
     "name=EXPECTED_COMMIT,value=${commit},type=PLAINTEXT" \
     "name=BUILD_DATE,value=${build_date},type=PLAINTEXT" \
@@ -118,14 +117,14 @@ exported() {
 }
 
 verify_build() {
-  local build="$1" status resolved
+  local build="$1" status built
   status="$(jq -r '.buildStatus' <<< "${build}")"
   if [[ "${status}" != SUCCEEDED ]]; then
     print_log_tail "${build}"
     fail "build ${build_id} finished with status ${status}"
   fi
-  resolved="$(jq -r '.resolvedSourceVersion' <<< "${build}")"
-  [[ "${resolved}" == "${commit}" ]] || fail "CodeBuild built ${resolved}, expected ${commit}"
+  built="$(exported "${build}" BUILT_COMMIT)"
+  [[ "${built}" == "${commit}" ]] || fail "CodeBuild built ${built}, expected ${commit}"
 }
 
 verify_staged_image() {

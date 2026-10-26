@@ -24,14 +24,36 @@ not to a tag or a local image ID.
 - **Build:** CodeBuild with a digest-pinned `quay.io/buildah/stable` image. Buildah runs rootless as the `build` user,
   with chroot isolation and fuse-overlayfs. It builds in Docker format, so the Containerfile `SHELL` applies to `RUN`
   exactly as in the Docker test build, and pushes `<commit>-<build number>` to ECR staging.
-- **Privileged CodeBuild container (accepted):** rootless Buildah needs a user namespace. In an unprivileged
-  container, `unshare(CLONE_NEWUSER)` is denied, which was tested locally with Docker 29. Root Buildah without
-  `CAP_SYS_ADMIN` also re-executes into a user namespace and fails the same way. The project therefore uses
-  `privileged_mode = true`. Checkov CKV_AWS_316 is baselined for that one project in the collection repository, and
-  a unit test pins every other project setting.
-  - **Containment:** the build runs in a single-use CodeBuild environment. Buildah itself runs as a non-root user.
-    No secret is present, and the only credential is the service role, which can write logs and push to the staging
-    repository and nothing else. The concurrency limit is 1, and the build has a hard timeout.
+- **Gate:** what runs in the build container is decided by the inline buildspec of the `NO_SOURCE` project in the
+  collection stack, not by the caller and not by this repository.
+  - The gate validates `EXPECTED_COMMIT` and `BUILD_DATE`, clones `main` without a credential, requires
+    `git merge-base --is-ancestor "$EXPECTED_COMMIT" origin/main`, checks out that commit, and runs its
+    `codebuild/build-image.sh` under a 35-minute `timeout`.
+  - A check inside `build-image.sh` alone would not help: whoever chooses the source also chooses the script.
+  - The gate was exercised in the pinned builder on 2026-10-26. A `main` commit passed; a pull request branch head,
+    an unknown SHA, a short SHA and a SHA followed by a newline were refused.
+- **Overrides:** the build role denies every code-selecting `StartBuild` override:
+  - 26 `Null` Deny statements on the `StartBuild` condition keys;
+  - an allow-list of the two environment variable names.
+
+  This corrects the earlier claim that IAM cannot restrict overrides; it can. `sourceVersion` has no key, but it is
+  irrelevant without a source. `timeoutInMinutesOverride` has no key either, and the gate's `timeout` bounds it.
+- **Credentials in the workflow:** `configure-aws-credentials` runs with `output-env-credentials: false`, and the
+  keys go only to the steps that call AWS. The smoke tests run after `docker logout` with no credential at all.
+  Grype, Syft and crane hold only the ECR pull token.
+- **Privileged CodeBuild container (proposed; owner acceptance pending in collection ADR 0014):** rootless Buildah
+  needs a user namespace.
+  - In an unprivileged container, `unshare(CLONE_NEWUSER)` is denied; this was tested locally with Docker 29.
+  - Root Buildah without `CAP_SYS_ADMIN` also re-executes into a user namespace and fails the same way. An
+    independent review reproduced both with `--isolation chroot` and vfs.
+  - The project therefore uses `privileged_mode = true`. Checkov CKV_AWS_316 is baselined for that one project in
+    the collection repository, and a unit test pins the project as a whole block.
+  - **Containment:**
+    - The build runs in a single-use CodeBuild environment, and Buildah itself runs as a non-root user.
+    - Only a `main` commit chosen through the gate runs in it.
+    - No secret is present. The only credential is the service role, which can write logs and push to the staging
+      repository and nothing else.
+    - The concurrency limit is 1, and the gate bounds the run time.
 - **Digest verification:** the workflow accepts a build only if CodeBuild reports success, the resolved commit
   matches, and the exported digest, tag and reference are consistent. ECR must also return that digest with the tag
   and a single-image manifest type. The pulled image's revision label must equal the commit.
@@ -73,10 +95,13 @@ executed (collection ADR 0012).
 
 - The role trust is pinned to the `release` environment, the repository and owner IDs, and `image-build.yml` on
   `main` (collection ADR 0014). Pull requests and forks get no AWS role.
-- `StartBuild` accepts overrides of the build specification, image and environment, and IAM cannot restrict them.
-  Only reviewed code on `main` can assume the role, the workflow sets only `EXPECTED_COMMIT` and `BUILD_DATE`, and
-  `iam:PassRole` is not granted, so the service role cannot be swapped.
-- Base images are pulled through a digest-only mirror, so the mirror cannot substitute content.
+- The build role denies every code-selecting `StartBuild` override, and the gate builds only `main` commits. So even
+  a leaked session or a compromised step cannot run unreviewed code in the privileged container. The residuals are:
+  - `timeoutInMinutesOverride`: a cost risk, bounded by the gate's `timeout`;
+  - back-to-back builds: about 14.40 USD a day at most, with the budget alert as the backstop;
+  - `debugSessionEnabled`: inert without `ssmmessages:*`.
+- The image revision label is a consistency check: it comes from the same build inputs.
+- Base images are pinned by digest. The digest-only mirror is a rate-limit workaround, not the control.
 
 ## Operational consequences
 

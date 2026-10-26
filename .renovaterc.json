@@ -103,6 +103,20 @@
       "datasourceTemplate": "github-release-attachments",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Amazon ECR credential helper version in codebuild/build-image.sh; the release is on S3, so Renovate proposes the version and the pull request must also update ECR_LOGIN_SHA256 from the release .sha256 file (the build fails until it does)",
+      "managerFilePatterns": [
+        "/^codebuild/build-image\\.sh$/"
+      ],
+      "matchStrings": [
+        "readonly ECR_LOGIN_VERSION='(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+      ],
+      "depNameTemplate": "awslabs/amazon-ecr-credential-helper",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
     }
   ],
   "pinDigests": true,

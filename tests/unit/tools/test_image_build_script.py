@@ -70,7 +70,6 @@ def build_description(**changes: Any) -> dict[str, Any]:
         "buildComplete": True,
         "buildStatus": "SUCCEEDED",
         "currentPhase": "COMPLETED",
-        "resolvedSourceVersion": COMMIT,
         "startTime": "2026-10-26T12:00:00Z",
         "endTime": "2026-10-26T12:09:00Z",
         "environment": {"image": BUILDER},
@@ -80,6 +79,7 @@ def build_description(**changes: Any) -> dict[str, Any]:
             {"name": "IMAGE_TAG", "value": f"{COMMIT}-12"},
             {"name": "IMAGE_REFERENCE", "value": f"{REPOSITORY}@{DIGEST}"},
             {"name": "BUILDAH_VERSION", "value": "1.43.5"},
+            {"name": "BUILT_COMMIT", "value": COMMIT},
         ],
     }
     build.update(changes)
@@ -194,8 +194,6 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
         "start-build",
         "--project-name",
         PROJECT,
-        "--source-version",
-        COMMIT,
         "--environment-variables-override",
         f"name=EXPECTED_COMMIT,value={COMMIT},type=PLAINTEXT",
         "name=BUILD_DATE,value=2026-10-26T11:00:00Z,type=PLAINTEXT",
@@ -222,7 +220,12 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
             f"build {BUILD_ID} finished with status FAILED",
         ),
         (
-            build_description(resolvedSourceVersion="f" * 40),
+            build_description(
+                exportedEnvironmentVariables=[
+                    *build_description()["exportedEnvironmentVariables"][:4],
+                    {"name": "BUILT_COMMIT", "value": "f" * 40},
+                ]
+            ),
             image_details(),
             f"CodeBuild built {'f' * 40}, expected {COMMIT}",
         ),
@@ -233,6 +236,7 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
                     {"name": "IMAGE_TAG", "value": f"{COMMIT}-12"},
                     {"name": "IMAGE_REFERENCE", "value": f"{REPOSITORY}@sha256:short"},
                     {"name": "BUILDAH_VERSION", "value": "1.43.5"},
+                    {"name": "BUILT_COMMIT", "value": COMMIT},
                 ]
             ),
             image_details(),
@@ -245,6 +249,7 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
                     {"name": "IMAGE_TAG", "value": f"{COMMIT}-12"},
                     {"name": "IMAGE_REFERENCE", "value": f"{REPOSITORY}:latest"},
                     {"name": "BUILDAH_VERSION", "value": "1.43.5"},
+                    {"name": "BUILT_COMMIT", "value": COMMIT},
                 ]
             ),
             image_details(),
@@ -257,6 +262,7 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
                     {"name": "IMAGE_TAG", "value": "latest"},
                     {"name": "IMAGE_REFERENCE", "value": f"{REPOSITORY}@{DIGEST}"},
                     {"name": "BUILDAH_VERSION", "value": "1.43.5"},
+                    {"name": "BUILT_COMMIT", "value": COMMIT},
                 ]
             ),
             image_details(),
@@ -264,6 +270,13 @@ def test_successful_build_records_the_verified_digest(fake: Path) -> None:
         ),
         (
             build_description(exportedEnvironmentVariables=[]),
+            image_details(),
+            "the build did not export BUILT_COMMIT exactly once",
+        ),
+        (
+            build_description(
+                exportedEnvironmentVariables=[{"name": "BUILT_COMMIT", "value": COMMIT}]
+            ),
             image_details(),
             "the build did not export IMAGE_DIGEST exactly once",
         ),

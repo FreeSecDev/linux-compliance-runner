@@ -27,11 +27,12 @@ require_inputs() {
   [[ "${STAGING_REPOSITORY_URI:-}" =~ ${REPOSITORY_PATTERN} ]] ||
     fail 'STAGING_REPOSITORY_URI must be an ECR repository URI in this account'
   [[ "${EXPECTED_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || fail 'EXPECTED_COMMIT must be a full commit SHA'
-  [[ "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" == "${EXPECTED_COMMIT}" ]] ||
+  [[ -n "${IMAGE_SOURCE_DIR:-}" && -f "${IMAGE_SOURCE_DIR}/Containerfile" ]] ||
+    fail 'IMAGE_SOURCE_DIR must be the checkout made by the inline buildspec of the CodeBuild project'
+  [[ "$(git -C "${IMAGE_SOURCE_DIR}" rev-parse HEAD)" == "${EXPECTED_COMMIT}" ]] ||
     fail 'the checked-out commit is not the commit the workflow asked for'
   [[ "${BUILD_DATE:-}" =~ ${BUILD_DATE_PATTERN} ]] || fail 'BUILD_DATE must be a UTC RFC 3339 time such as 2026-10-26T12:00:00Z'
   [[ "${CODEBUILD_BUILD_NUMBER:-}" =~ ^[0-9]+$ ]] || fail 'CODEBUILD_BUILD_NUMBER is missing'
-  [[ -n "${CODEBUILD_SRC_DIR:-}" && -f "${CODEBUILD_SRC_DIR}/Containerfile" ]] || fail 'the source checkout has no Containerfile'
   local version
   version="$(buildah --version)"
   [[ "${version}" == "buildah version ${EXPECTED_BUILDAH_VERSION} "* ]] ||
@@ -80,8 +81,8 @@ REGISTRIES
 
 copy_build_context() {
   install -d -m 0755 -o "${BUILD_USER}" -g "${BUILD_USER}" "${CONTEXT_DIR}"
-  cp -R "${CODEBUILD_SRC_DIR}/Containerfile" "${CODEBUILD_SRC_DIR}/Containerfile.dockerignore" \
-    "${CODEBUILD_SRC_DIR}/toolbox" "${CONTEXT_DIR}/"
+  cp -R "${IMAGE_SOURCE_DIR}/Containerfile" "${IMAGE_SOURCE_DIR}/Containerfile.dockerignore" \
+    "${IMAGE_SOURCE_DIR}/toolbox" "${CONTEXT_DIR}/"
   chown -R "${BUILD_USER}:${BUILD_USER}" "${CONTEXT_DIR}"
 }
 

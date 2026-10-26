@@ -63,7 +63,7 @@ COSIGN_SIGN_RUN = env -i $(foreach name,$(COSIGN_SIGN_ENV_PASSTHROUGH),$(name)="
 AWS_ACCOUNT_ID := 910736812072
 IMAGE_BUILD_REGION := eu-west-1
 IMAGE_BUILD_PROJECT := freesecdev-linux-compliance-runner
-IMAGE_BUILD_TIMEOUT_MINUTES := 50
+IMAGE_BUILD_TIMEOUT_MINUTES := 55
 STAGING_REGISTRY := $(AWS_ACCOUNT_ID).dkr.ecr.$(IMAGE_BUILD_REGION).amazonaws.com
 STAGING_REPOSITORY := $(STAGING_REGISTRY)/linux-compliance-runner-staging
 RELEASE_REGISTRY := ghcr.io
@@ -151,6 +151,7 @@ Image and AWS
   aws-bootstrap         The AWS account is bootstrapped from the collection repository (make aws-bootstrap there)
   image-build           Build the release image in AWS CodeBuild (OIDC credentials) and record its staged digest
   staging-login         Log the container engine in to the private ECR staging registry
+  staging-logout        Remove the ECR staging registry login from the container engine
   image-pull            Pull IMAGE_REF (staged digest) and check its digest and revision label
   image-smoke-staged    Run the smoke tests against the pulled IMAGE_REF
   image-scan            Scan the local test image, or the registry digest IMAGE_REF, and apply the exception gate
@@ -175,7 +176,8 @@ export HELP_TEXT
 	lint-skills lint-container lint-renovate lint-iac security typecheck test test-unit test-coverage \
 	aws-bootstrap image-build image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
 	require-uv require-container-engine grype-db grype-expected-config lint-shell staging-login image-pull \
-	image-smoke-staged image-promote verify-release print-staging-registry print-release-repository
+	image-smoke-staged image-promote verify-release print-staging-registry print-release-repository \
+	staging-logout
 
 help:
 	@printf '%s\n' "$$HELP_TEXT"
@@ -297,6 +299,9 @@ print-release-repository:
 staging-login: require-container-engine
 	aws ecr get-login-password --region '$(IMAGE_BUILD_REGION)' | \
 		$(CONTAINER_ENGINE) login --username AWS --password-stdin '$(STAGING_REGISTRY)'
+
+staging-logout: require-container-engine
+	$(CONTAINER_ENGINE) logout '$(STAGING_REGISTRY)'
 
 image-pull: require-container-engine
 	$(call REQUIRE_IMAGE_REF,$(STAGED_REFERENCE_PATTERN),$(STAGING_REPOSITORY)@sha256:<digest>)
