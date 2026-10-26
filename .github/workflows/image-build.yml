@@ -1,0 +1,192 @@
+---
+name: image-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Containerfile
+      - Containerfile.dockerignore
+      - toolbox/**
+      - codebuild/**
+      - security/**
+      - tests/smoke/**
+      - tools/aws/**
+      - tools/security/**
+      - Makefile
+      - .github/workflows/image-build.yml
+
+permissions: {}
+
+concurrency:
+  group: image-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      staged: ${{ steps.record.outputs.staged }}
+      tag: ${{ steps.record.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: 0.13.1
+          enable-cache: false
+      - name: Assume the image build role through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: image-build-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: Build the image in AWS CodeBuild and verify the staged digest
+        run: make image-build
+      - name: Record the staged digest
+        id: record
+        run: |
+          staged="$(jq -er '.staging.reference' build/image-build/build.json)"
+          tag="$(jq -er '.staging.tag' build/image-build/build.json)"
+          printf 'staged=%s\ntag=%s\n' "$staged" "$tag" >> "$GITHUB_OUTPUT"
+          printf '## Staged image\n\n- reference: %s\n- tag: %s\n' "$staged" "$tag" >> "$GITHUB_STEP_SUMMARY"
+      - name: Log in to the ECR staging registry
+        run: make staging-login
+      - name: Pull the staged digest and check its revision label
+        env:
+          IMAGE_REF: ${{ steps.record.outputs.staged }}
+        run: make image-pull
+      - name: Run the smoke tests against the staged digest
+        env:
+          IMAGE_REF: ${{ steps.record.outputs.staged }}
+        run: make image-smoke-staged
+      - name: Scan exactly the staged digest with the pinned Grype and apply the exception gate
+        id: scan
+        env:
+          IMAGE_REF: ${{ steps.record.outputs.staged }}
+        run: make image-scan
+      - name: Publish the scan summary
+        if: ${{ always() && steps.scan.outcome != 'skipped' }}
+        run: |
+          if [ -f build/image-scan/summary.md ]; then
+            cat build/image-scan/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Generate the SBOM of the staged digest
+        env:
+          IMAGE_REF: ${{ steps.record.outputs.staged }}
+        run: make sbom
+      - name: Upload the build record, scan report and SBOM
+        if: ${{ always() && steps.record.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: image-build
+          path: |
+            build/image-build/
+            build/image-scan/
+            build/sbom/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Log out of the ECR staging registry
+        if: ${{ always() }}
+        run: docker logout "$(make --no-print-directory -s print-staging-registry)"
+
+  publish:
+    name: publish
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the build record, scan report and SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: image-build
+          path: build/
+      - name: Assume the image build role through OIDC to read the staged digest
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: image-publish-${{ github.run_id }}
+          role-duration-seconds: 900
+      - name: Log in to the ECR staging registry
+        run: make staging-login
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Copy the staged digest to GHCR and check that the digest is unchanged
+        env:
+          IMAGE_REF: ${{ needs.build.outputs.staged }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: make image-promote
+      - name: Record the release digest
+        id: release
+        run: |
+          reference="$(jq -er '.release' build/image-release/image.json)"
+          digest="$(jq -er '.digest' build/image-release/image.json)"
+          name="$(make --no-print-directory -s print-release-repository)"
+          [ "$reference" = "$name@$digest" ]
+          printf 'reference=%s\nname=%s\ndigest=%s\n' "$reference" "$name" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Sign the release digest with cosign keyless
+        env:
+          IMAGE_REF: ${{ steps.release.outputs.reference }}
+        run: make sign
+      - name: Attest the build provenance of the release digest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ steps.release.outputs.name }}
+          subject-digest: ${{ steps.release.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest the SBOM of the release digest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ steps.release.outputs.name }}
+          subject-digest: ${{ steps.release.outputs.digest }}
+          sbom-path: build/sbom/sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify the signature and both attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ steps.release.outputs.reference }}
+        run: make verify-release
+      - name: Record the release digest in the job summary
+        env:
+          RELEASE_REFERENCE: ${{ steps.release.outputs.reference }}
+        run: printf '## Release image\n\n- %s\n' "$RELEASE_REFERENCE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the release record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: image-release
+          path: build/image-release/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Log out of the registries
+        if: ${{ always() }}
+        run: |
+          docker logout ghcr.io
+          docker logout "$(make --no-print-directory -s print-staging-registry)"

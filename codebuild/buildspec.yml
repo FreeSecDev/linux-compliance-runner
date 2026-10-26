@@ -1,0 +1,16 @@
+---
+version: 0.2
+
+env:
+  exported-variables:
+    - IMAGE_DIGEST
+    - IMAGE_TAG
+    - IMAGE_REFERENCE
+    - BUILDAH_VERSION
+
+phases:
+  build:
+    on-failure: ABORT
+    commands:
+      - bash codebuild/build-image.sh
+      - . /tmp/image-build/result.env

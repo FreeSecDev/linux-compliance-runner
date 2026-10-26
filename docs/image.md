@@ -5,7 +5,8 @@ test and scan it. Design rationale is in [ADR 0001](adr/0001-toolbox-image.md). 
 FREES-37 (vulnerability gate), FREES-135 (gate hardening and Grype release signature).
 
 The image is a job toolbox for the `freesecdev.linux_compliance` CI. It is not a self-hosted runner: it has no runner agent,
-no entrypoint and no network service. The release image is built in AWS (FREES-36), scanned, signed and consumed by digest.
+no entrypoint and no network service. The release image is built in AWS CodeBuild with rootless Buildah, scanned by digest, signed and consumed by digest
+([`image-build.md`](image-build.md), FREES-36).
 The local and CI builds described here are test builds only. They are tagged `localhost/linux-compliance-runner:smoke` and are never pushed.
 
 ## Contents
@@ -290,6 +291,6 @@ release appears; the gate fails as soon as an OpenTofu bump removes a finding (s
 
 - linux/amd64 only.
 - Transitive `apk` dependencies are not individually pinned; they come from the pinned Alpine release and are covered by the
-  scan; the SBOM is still open (FREES-37).
-- The gate scans the local test build. Scanning the release image built in AWS, the SBOM, signing and publication belong to
-  FREES-36 and FREES-37.
+  scan and listed in the release SBOM ([`image-build.md`](image-build.md)).
+- `make image-scan` without `IMAGE_REF` scans the local test build. The release image built in AWS is scanned by
+  registry digest with `IMAGE_REF`; see [`image-build.md`](image-build.md#scan-bound-to-the-digest).
