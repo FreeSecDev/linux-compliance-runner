@@ -92,7 +92,7 @@
     },
     {
       "customType": "regex",
-      "description": "go-containerregistry (crane) release version and the SHA-256 of its Linux x86_64 archive, pinned together in the Makefile for make image-promote",
+      "description": "go-containerregistry (crane) release version and the SHA-256 of its Linux x86_64 archive, pinned together in the Makefile for the digest checks of make image-push and the release tag of make image-release",
       "managerFilePatterns": [
         "/(^|/)Makefile$/"
       ],
@@ -106,17 +106,15 @@
     },
     {
       "customType": "regex",
-      "description": "Amazon ECR credential helper version in codebuild/build-image.sh; the release is on S3, so Renovate proposes the version and the pull request must also update ECR_LOGIN_SHA256 from the release .sha256 file (the build fails until it does)",
+      "description": "Builder image quay.io/buildah/stable for make image-build: immutable release tag and index digest, pinned together in the Makefile; the expected Buildah version is derived from the tag",
       "managerFilePatterns": [
-        "/^codebuild/build-image\\.sh$/"
+        "/(^|/)Makefile$/"
       ],
       "matchStrings": [
-        "readonly ECR_LOGIN_VERSION='(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+        "BUILDAH_IMAGE := (?<depName>\\S+)\\nBUILDAH_TAG := (?<currentValue>\\S+)\\nBUILDAH_DIGEST := (?<currentDigest>sha256:[a-f0-9]{64})"
       ],
-      "depNameTemplate": "awslabs/amazon-ecr-credential-helper",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>.+)$",
-      "versioningTemplate": "semver"
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-immutable$"
     }
   ],
   "pinDigests": true,
@@ -214,6 +212,16 @@
         "sigstore/cosign"
       ],
       "groupName": "image scanner"
+    },
+    {
+      "description": "The digest-pinned Buildah builder image used by make image-build in the image-build workflow; it is not shipped in the image",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "quay.io/buildah/stable"
+      ],
+      "groupName": "image builder"
     },
     {
       "description": "Container base image digests and tags in Containerfiles",

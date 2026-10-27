@@ -60,12 +60,20 @@ COSIGN_SIGN_ENV_PASSTHROUGH := $(COSIGN_ENV_PASSTHROUGH) DOCKER_CONFIG ACTIONS_I
 	ACTIONS_ID_TOKEN_REQUEST_TOKEN
 COSIGN_SIGN_RUN = env -i $(foreach name,$(COSIGN_SIGN_ENV_PASSTHROUGH),$(name)="$${$(name)-}") \
 	TUF_ROOT='$(CURDIR)/$(SIGSTORE_TUF_DIR)' $(COSIGN)
-AWS_ACCOUNT_ID := 910736812072
-IMAGE_BUILD_REGION := eu-west-1
-IMAGE_BUILD_PROJECT := freesecdev-linux-compliance-runner
-IMAGE_BUILD_TIMEOUT_MINUTES := 55
-STAGING_REGISTRY := $(AWS_ACCOUNT_ID).dkr.ecr.$(IMAGE_BUILD_REGION).amazonaws.com
-STAGING_REPOSITORY := $(STAGING_REGISTRY)/linux-compliance-runner-staging
+BUILDAH_IMAGE := quay.io/buildah/stable
+BUILDAH_TAG := v1.43.5-immutable
+BUILDAH_DIGEST := sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb
+BUILDAH_REFERENCE := $(BUILDAH_IMAGE)@$(BUILDAH_DIGEST)
+BUILDAH_VERSION := $(patsubst v%-immutable,%,$(BUILDAH_TAG))
+BUILDAH_VOLUME := linux-compliance-runner-buildah
+BUILDAH_SCRIPT := /opt/image-build/buildah.sh
+BUILDAH_SECCOMP := tools/image/seccomp-buildah.json
+BUILDAH_CAPABILITIES := CHOWN DAC_OVERRIDE FOWNER SETUID SETGID SYS_CHROOT
+BUILDAH_RUN = $(CONTAINER_ENGINE) run --rm --cap-drop ALL $(foreach cap,$(BUILDAH_CAPABILITIES),--cap-add $(cap)) \
+	--security-opt 'seccomp=$(CURDIR)/$(IMAGE_BUILD_DIR)/seccomp-buildah.json' --security-opt apparmor=unconfined \
+	--volume '$(BUILDAH_VOLUME):/var/lib/image-build' \
+	--volume '$(CURDIR)/$(IMAGE_BUILD_DIR)/buildah.sh:$(BUILDAH_SCRIPT):ro' \
+	--env EXPECTED_BUILDAH_VERSION='$(BUILDAH_VERSION)' --env EXPECTED_COMMIT="$$(git rev-parse HEAD)"
 RELEASE_REGISTRY := ghcr.io
 RELEASE_REPOSITORY := $(RELEASE_REGISTRY)/freesecdev/linux-compliance-runner
 RELEASE_SOURCE_REPOSITORY := FreeSecDev/linux-compliance-runner
@@ -73,6 +81,46 @@ RELEASE_WORKFLOW := $(RELEASE_SOURCE_REPOSITORY)/.github/workflows/image-build.y
 RELEASE_SIGNER_IDENTITY := https://github.com/$(RELEASE_WORKFLOW)@refs/heads/main
 IMAGE_BUILD_DIR := build/image-build
 IMAGE_BUILD_RECORD := $(IMAGE_BUILD_DIR)/build.json
+IMAGE_ARCHIVE := $(IMAGE_BUILD_DIR)/image.tar
+IMAGE_PUSH_DIR := build/image-push
+IMAGE_PUSH_RECORD := $(IMAGE_PUSH_DIR)/push.json
+IMAGE_BUILD_SOURCES := Containerfile Containerfile.dockerignore toolbox
+LOCAL_BUILD_TAG := localhost/linux-compliance-runner:build
+DOCKER_MANIFEST := application/vnd.docker.distribution.manifest.v2+json
+SHA256_PATTERN := sha256:[0-9a-f]{64}
+RELEASE_TAG_PATTERN := [0-9a-f]{40}-[0-9]+-[0-9]+
+MISSING_MANIFEST_PATTERN := ^Error: .*(MANIFEST_UNKNOWN|NAME_UNKNOWN)
+MISSING_PACKAGE_PATTERN := ^Error: GET https://ghcr\.io/token\?.*: DENIED:
+CONFIG_MEMBER_PATTERN := [0-9a-f]{64}\.json
+ifeq ($(origin ALLOW_MISSING_PACKAGE),command line)
+MISSING_PACKAGE_ALLOWED := $(ALLOW_MISSING_PACKAGE)
+else
+MISSING_PACKAGE_ALLOWED :=
+endif
+EXPECTED_ARCHIVE_SHA256 ?=
+EXPECTED_CONFIG_DIGEST ?=
+export EXPECTED_ARCHIVE_SHA256 EXPECTED_CONFIG_DIGEST
+REQUIRE_ARCHIVE_HASH = @if ! printf '%s\n' "$${EXPECTED_ARCHIVE_SHA256}" | grep -Eqx '[0-9a-f]{64}' || \
+		! printf '%s\n' "$${EXPECTED_CONFIG_DIGEST}" | grep -Eqx '$(SHA256_PATTERN)'; then \
+		printf 'error: EXPECTED_ARCHIVE_SHA256 (64 hex) and EXPECTED_CONFIG_DIGEST (sha256:<64 hex>) are required\n' >&2; \
+		exit 2; \
+	fi; \
+	if ! printf '%s  %s\n' "$${EXPECTED_ARCHIVE_SHA256}" '$(IMAGE_ARCHIVE)' | sha256sum --check --strict --status -; then \
+		printf 'error: %s is missing or does not match EXPECTED_ARCHIVE_SHA256\n' '$(IMAGE_ARCHIVE)' >&2; exit 1; \
+	fi
+REQUIRE_ARCHIVE = $(REQUIRE_ARCHIVE_HASH); \
+	member="$${EXPECTED_CONFIG_DIGEST\#sha256:}.json"; \
+	if ! tar -xOf '$(IMAGE_ARCHIVE)' -- manifest.json | \
+		jq -e --arg member "$$member" 'length == 1 and .[0].Config == $$member' >/dev/null; then \
+		printf 'error: manifest.json must name exactly one image whose config is %s\n' "$$member" >&2; exit 1; \
+	fi; \
+	if [ "sha256:$$(tar -xOf '$(IMAGE_ARCHIVE)' -- "$$member" | sha256sum | cut -d ' ' -f 1)" != "$${EXPECTED_CONFIG_DIGEST}" ]; then \
+		printf 'error: the archived image config is not %s\n' "$${EXPECTED_CONFIG_DIGEST}" >&2; exit 1; \
+	fi; \
+	if [ "$$(tar -xOf '$(IMAGE_ARCHIVE)' -- "$$member" | jq -r '.config.Labels["org.opencontainers.image.revision"] // ""')" != \
+		"$$(git rev-parse HEAD)" ]; then \
+		printf 'error: the archived image revision label is not the checked-out commit\n' >&2; exit 1; \
+	fi
 IMAGE_RELEASE_DIR := build/image-release
 SBOM_DIR := build/sbom
 SPDX_PREDICATE := https://spdx.dev/Document/v2.3
@@ -84,10 +132,15 @@ SPDX_DESCRIBES_DIGEST := [.relationships[] | select(.spdxElementId == "SPDXRef-D
 DIGEST_REFERENCE_PATTERN := [a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}
 IMAGE_REF ?=
 RELEASE_TAG ?=
-export IMAGE_REF RELEASE_TAG
+EXPECTED_COMMIT ?=
+export IMAGE_REF RELEASE_TAG EXPECTED_COMMIT
+VERIFY_COMMIT = $${EXPECTED_COMMIT:-$$(git rev-parse HEAD)}
 REQUIRE_IMAGE_REF = @printf '%s\n' "$${IMAGE_REF}" | grep -Eqx '$(1)' || { \
 	printf 'error: IMAGE_REF must be %s (a digest reference, never a tag)\n' '$(2)' >&2; exit 2; }
-STAGED_REFERENCE_PATTERN := $(subst .,\.,$(STAGING_REPOSITORY))@sha256:[0-9a-f]{64}
+REQUIRE_EXPECTED_COMMIT = @head="$$(git rev-parse HEAD)"; \
+	if [ -n "$${EXPECTED_COMMIT}" ] && [ "$${EXPECTED_COMMIT}" != "$$head" ]; then \
+		printf 'error: the checkout is at %s, but EXPECTED_COMMIT is %s\n' "$$head" "$${EXPECTED_COMMIT}" >&2; exit 2; \
+	fi
 RELEASE_REFERENCE_PATTERN := $(subst .,\.,$(RELEASE_REPOSITORY))@sha256:[0-9a-f]{64}
 GRYPE_ARCHIVE := grype_$(GRYPE_VERSION)_linux_amd64.tar.gz
 GRYPE_DIR := build/tools/grype-$(GRYPE_VERSION)
@@ -147,19 +200,23 @@ Tests
   test-unit             Unit tests
   test-coverage         Unit tests with branch coverage thresholds
 
-Image and AWS
-  aws-bootstrap         The AWS account is bootstrapped from the collection repository (make aws-bootstrap there)
-  image-build           Build the release image in AWS CodeBuild (OIDC credentials) and record its staged digest
-  staging-login         Log the container engine in to the private ECR staging registry
-  staging-logout        Remove the ECR staging registry login from the container engine
-  image-pull            Pull IMAGE_REF (staged digest) and check its digest and revision label
-  image-smoke-staged    Run the smoke tests against the pulled IMAGE_REF
+Image
+  image-build           Build the archived HEAD commit with rootless Buildah in the pinned builder image and export
+                        build/image-build/image.tar (no credentials)
+  image-archive-check   Check build/image-build/image.tar against EXPECTED_ARCHIVE_SHA256, EXPECTED_CONFIG_DIGEST and HEAD
+  image-push            Push the checked archive to GHCR as candidate-<commit>-<run>-<attempt> (workflow only)
+  image-smoke-archive   Load the verified archive and run the smoke tests against it
+  release-tag-absent    Fail unless RELEASE_TAG is proven absent from GHCR (any other registry error fails)
+  image-pull            Pull IMAGE_REF (a name@sha256 digest) and check its digest and revision label
+  image-smoke-pulled    Run the smoke tests against the pulled IMAGE_REF
   image-scan            Scan the local test image, or the registry digest IMAGE_REF, and apply the exception gate
   grype-expected-config Rewrite security/grype-expected-config.json from the last scan (after a Grype bump)
   sbom                  SPDX and CycloneDX SBOMs of the registry digest IMAGE_REF with the pinned Syft
-  image-promote         Copy the staged IMAGE_REF to GHCR by digest (tag RELEASE_TAG) and check the digest
+  sbom-check            Check that build/sbom describes exactly the digest IMAGE_REF
   sign                  Sign the GHCR digest IMAGE_REF with cosign keyless (GitHub Actions OIDC only)
   verify-release        Verify the cosign signature and the provenance and SBOM attestations of IMAGE_REF
+  image-release         Tag the verified GHCR digest IMAGE_REF as RELEASE_TAG (<commit>-<run>-<attempt>), never
+                        moving or reusing a tag
   image-smoke           Build the toolbox image locally (never published) and run the smoke tests
 
 Docs and release
@@ -174,10 +231,10 @@ export HELP_TEXT
 
 .PHONY: help bootstrap install format lint lint-python lint-yaml lint-actions lint-repo \
 	lint-skills lint-container lint-renovate lint-iac security typecheck test test-unit test-coverage \
-	aws-bootstrap image-build image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
-	require-uv require-container-engine grype-db grype-expected-config lint-shell staging-login image-pull \
-	image-smoke-staged image-promote verify-release print-staging-registry print-release-repository \
-	staging-logout
+	image-build image-push image-scan sbom sign image-smoke toolbox-lock-check docs release-check clean ci \
+	require-uv require-container-engine require-image-workflow grype-db grype-expected-config lint-shell image-pull \
+	image-smoke-pulled image-release verify-release print-release-repository image-smoke-archive \
+	release-tag-absent sbom-check image-archive-check
 
 help:
 	@printf '%s\n' "$$HELP_TEXT"
@@ -279,32 +336,127 @@ test-coverage: require-uv
 	$(RUN) pytest tests/unit --cov --cov-report=term-missing --cov-report=xml
 	$(RUN) coverage report --include='tools/*' --fail-under=100
 
-aws-bootstrap:
-	@printf 'The AWS resources of this repository are managed in FreeSecDev/ansible-linux-compliance (infra/account).\n'
-	@printf 'Run make aws-bootstrap in a checkout of that repository; see docs/image-build.md.\n'
+image-build: require-container-engine
+	$(REQUIRE_EXPECTED_COMMIT)
+	@if [ "$$(uname -s)/$$(uname -m)" != Linux/x86_64 ]; then \
+		printf 'error: the release image is built for linux/amd64 only\n' >&2; \
+		exit 1; \
+	fi
+	rm -rf $(IMAGE_BUILD_DIR)
+	mkdir -p $(IMAGE_BUILD_DIR)/source
+	git archive --format=tar HEAD -- $(IMAGE_BUILD_SOURCES) | tar -x -C $(IMAGE_BUILD_DIR)/source
+	git show HEAD:tools/image/buildah.sh > $(IMAGE_BUILD_DIR)/buildah.sh
+	git show HEAD:$(BUILDAH_SECCOMP) > $(IMAGE_BUILD_DIR)/seccomp-buildah.json
+	$(CONTAINER_ENGINE) pull --quiet '$(BUILDAH_REFERENCE)'
+	$(CONTAINER_ENGINE) volume rm --force '$(BUILDAH_VOLUME)' >/dev/null
+	$(CONTAINER_ENGINE) volume create '$(BUILDAH_VOLUME)' >/dev/null
+	$(BUILDAH_RUN) --env BUILD_DATE='$(BUILD_DATE)' --volume '$(CURDIR)/$(IMAGE_BUILD_DIR)/source:/source:ro' \
+		'$(BUILDAH_REFERENCE)' bash '$(BUILDAH_SCRIPT)' build
+	$(BUILDAH_RUN) '$(BUILDAH_REFERENCE)' bash '$(BUILDAH_SCRIPT)' export > $(IMAGE_ARCHIVE)
+	$(CONTAINER_ENGINE) volume rm --force '$(BUILDAH_VOLUME)' >/dev/null
+	@commit="$$(git rev-parse HEAD)"; \
+	config="$$(tar -xOf '$(IMAGE_ARCHIVE)' -- manifest.json | jq -er 'if length == 1 then .[0].Config else error("not one image") end')"; \
+	if ! printf '%s\n' "$$config" | grep -Eqx '$(CONFIG_MEMBER_PATTERN)'; then \
+		printf 'error: the exported archive names an unexpected config member\n' >&2; exit 1; \
+	fi; \
+	digest="sha256:$$(tar -xOf '$(IMAGE_ARCHIVE)' -- "$$config" | sha256sum | cut -d ' ' -f 1)"; \
+	if [ "$$digest.json" != "sha256:$$config" ]; then \
+		printf 'error: the exported config member is not named after its digest\n' >&2; exit 1; \
+	fi; \
+	built="$$(tar -xOf '$(IMAGE_ARCHIVE)' -- "$$config" | jq -r '.config.Labels["org.opencontainers.image.revision"] // ""')"; \
+	if [ "$$built" != "$$commit" ]; then \
+		printf 'error: the archived image carries revision %s, expected %s\n' "$$built" "$$commit" >&2; exit 1; \
+	fi; \
+	archive="$$(sha256sum '$(IMAGE_ARCHIVE)' | cut -d ' ' -f 1)"; \
+	jq -n --arg commit "$$commit" --arg built_commit "$$built" --arg config_digest "$$digest" \
+		--arg archive_sha256 "$$archive" --arg builder_image '$(BUILDAH_REFERENCE)' \
+		--arg buildah_version '$(BUILDAH_VERSION)' --arg build_date '$(BUILD_DATE)' \
+		'$$ARGS.named' > $(IMAGE_BUILD_RECORD); \
+	printf 'built %s: config %s, archive sha256 %s\n' "$$commit" "$$digest" "$$archive"
 
-image-build:
-	@command -v aws >/dev/null || { printf 'error: the AWS CLI is required\n' >&2; exit 1; }
-	@command -v jq >/dev/null || { printf 'error: jq is required\n' >&2; exit 1; }
-	bash tools/aws/image-build.sh --project '$(IMAGE_BUILD_PROJECT)' --repository-uri '$(STAGING_REPOSITORY)' \
-		--commit "$$(git rev-parse HEAD)" --build-date '$(BUILD_DATE)' --output '$(IMAGE_BUILD_RECORD)' \
-		--timeout-minutes '$(IMAGE_BUILD_TIMEOUT_MINUTES)'
+release-tag-absent: $(CRANE)
+	@printf '%s\n' "$${RELEASE_TAG}" | grep -Eqx '$(RELEASE_TAG_PATTERN)' || { \
+		printf 'error: RELEASE_TAG must be <commit>-<run number>-<run attempt>\n' >&2; exit 2; }
+	@mkdir -p build
+	@if $(CRANE_RUN) digest "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" > build/release-tag-check.txt 2>&1; then \
+		printf 'error: %s already exists; a release tag is never moved or reused\n' "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" >&2; \
+		exit 1; \
+	elif grep -Eq '$(MISSING_MANIFEST_PATTERN)' build/release-tag-check.txt; then \
+		printf '%s does not exist yet\n' "$(RELEASE_REPOSITORY):$${RELEASE_TAG}"; \
+	elif [ "$(MISSING_PACKAGE_ALLOWED)" = 1 ] && grep -Eq '$(MISSING_PACKAGE_PATTERN)' build/release-tag-check.txt; then \
+		printf '%s: no access before the first push; the package does not exist yet or the push fails next\n' \
+			"$(RELEASE_REPOSITORY)"; \
+	else \
+		cat build/release-tag-check.txt >&2; \
+		printf 'error: could not prove that %s is absent; refusing to continue\n' "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" >&2; \
+		exit 1; \
+	fi
 
-print-staging-registry:
-	@printf '%s\n' '$(STAGING_REGISTRY)'
+image-archive-check:
+	$(REQUIRE_EXPECTED_COMMIT)
+	$(REQUIRE_ARCHIVE)
+	@printf 'archive %s holds the config %s of %s\n' '$(IMAGE_ARCHIVE)' "$${EXPECTED_CONFIG_DIGEST}" "$$(git rev-parse HEAD)"
+
+image-push: require-image-workflow $(CRANE)
+	$(REQUIRE_EXPECTED_COMMIT)
+	$(REQUIRE_ARCHIVE_HASH)
+	@for name in GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT; do \
+		printf '%s\n' "$${!name-}" | grep -Eqx '[0-9]+' || { printf 'error: %s is missing\n' "$$name" >&2; exit 2; }; \
+	done
+	@release="$$(git rev-parse HEAD)-$${GITHUB_RUN_NUMBER}-$${GITHUB_RUN_ATTEMPT}"; \
+	$(MAKE) --no-print-directory release-tag-absent RELEASE_TAG="$$release" ALLOW_MISSING_PACKAGE=1
+	@commit="$$(git rev-parse HEAD)"; \
+	release="$$commit-$${GITHUB_RUN_NUMBER}-$${GITHUB_RUN_ATTEMPT}"; \
+	candidate='$(RELEASE_REPOSITORY)'":candidate-$$release"; \
+	$(CRANE_RUN) push '$(IMAGE_ARCHIVE)' "$$candidate" >/dev/null; \
+	digest="$$($(CRANE_RUN) digest "$$candidate")"; \
+	if ! printf '%s\n' "$$digest" | grep -Eqx '$(SHA256_PATTERN)'; then \
+		printf 'error: GHCR reported no digest for %s\n' "$$candidate" >&2; exit 1; \
+	fi; \
+	reference='$(RELEASE_REPOSITORY)'"@$$digest"; \
+	served="sha256:$$($(CRANE_RUN) manifest "$$reference" | sha256sum | cut -d ' ' -f 1)"; \
+	media="$$($(CRANE_RUN) manifest "$$reference" | jq -r '.mediaType')"; \
+	config="$$($(CRANE_RUN) manifest "$$reference" | jq -r '.config.digest')"; \
+	built="$$($(CRANE_RUN) config "$$reference" | jq -r '.config.Labels["org.opencontainers.image.revision"] // ""')"; \
+	if [ "$$served" != "$$digest" ]; then \
+		printf 'error: GHCR serves %s for %s\n' "$$served" "$$reference" >&2; exit 1; \
+	fi; \
+	if [ "$$media" != '$(DOCKER_MANIFEST)' ]; then \
+		printf 'error: the pushed manifest is %s, not a single Docker v2 image manifest\n' "$$media" >&2; exit 1; \
+	fi; \
+	if [ "$$config" != "$${EXPECTED_CONFIG_DIGEST}" ]; then \
+		printf 'error: the pushed image config is %s, the build recorded %s\n' "$$config" "$${EXPECTED_CONFIG_DIGEST}" >&2; \
+		exit 1; \
+	fi; \
+	if [ "$$built" != "$$commit" ]; then \
+		printf 'error: the pushed image carries revision %s, expected %s\n' "$$built" "$$commit" >&2; exit 1; \
+	fi; \
+	mkdir -p $(IMAGE_PUSH_DIR); \
+	jq -n --arg commit "$$commit" --arg built_commit "$$built" --arg digest "$$digest" --arg reference "$$reference" \
+		--arg name '$(RELEASE_REPOSITORY)' --arg candidate "$$candidate" --arg release_tag "$$release" \
+		--arg config_digest "$$config" \
+		'$$ARGS.named' > $(IMAGE_PUSH_RECORD); \
+	printf 'pushed %s as %s (config %s, revision %s)\n' "$$candidate" "$$reference" "$$config" "$$built"
+
+image-smoke-archive: require-uv require-container-engine
+	$(REQUIRE_EXPECTED_COMMIT)
+	$(REQUIRE_ARCHIVE)
+	$(CONTAINER_ENGINE) image rm --force '$(LOCAL_BUILD_TAG)' >/dev/null 2>&1 || true
+	$(CONTAINER_ENGINE) load --quiet --input '$(IMAGE_ARCHIVE)'
+	@revision="$$($(CONTAINER_ENGINE) image inspect \
+		--format '{{index .Config.Labels "org.opencontainers.image.revision"}}' '$(LOCAL_BUILD_TAG)')"; \
+	if [ "$$revision" != "$$(git rev-parse HEAD)" ]; then \
+		printf 'error: the loaded image revision label %s is not the checked-out commit\n' "$$revision" >&2; exit 1; \
+	fi
+	SMOKE_IMAGE='$(LOCAL_BUILD_TAG)' SMOKE_ENGINE=$(notdir $(CONTAINER_ENGINE)) $(RUN) pytest tests/smoke \
+		-k 'not test_build_rejects_a_build_date_that_is_not_rfc_3339'
 
 print-release-repository:
 	@printf '%s\n' '$(RELEASE_REPOSITORY)'
 
-staging-login: require-container-engine
-	aws ecr get-login-password --region '$(IMAGE_BUILD_REGION)' | \
-		$(CONTAINER_ENGINE) login --username AWS --password-stdin '$(STAGING_REGISTRY)'
-
-staging-logout: require-container-engine
-	$(CONTAINER_ENGINE) logout '$(STAGING_REGISTRY)'
-
 image-pull: require-container-engine
-	$(call REQUIRE_IMAGE_REF,$(STAGED_REFERENCE_PATTERN),$(STAGING_REPOSITORY)@sha256:<digest>)
+	$(call REQUIRE_IMAGE_REF,$(DIGEST_REFERENCE_PATTERN),name@sha256:<digest>)
+	$(REQUIRE_EXPECTED_COMMIT)
 	$(CONTAINER_ENGINE) pull --quiet "$${IMAGE_REF}"
 	$(CONTAINER_ENGINE) image inspect --format '{{json .RepoDigests}}' "$${IMAGE_REF}" | \
 		jq -e --arg reference "$${IMAGE_REF}" 'index($$reference) != null' >/dev/null
@@ -316,10 +468,16 @@ image-pull: require-container-engine
 	fi; \
 	printf 'pulled %s, revision %s\n' "$${IMAGE_REF}" "$$revision"
 
-image-smoke-staged: require-uv require-container-engine
-	$(call REQUIRE_IMAGE_REF,$(STAGED_REFERENCE_PATTERN),$(STAGING_REPOSITORY)@sha256:<digest>)
+image-smoke-pulled: require-uv require-container-engine
+	$(call REQUIRE_IMAGE_REF,$(DIGEST_REFERENCE_PATTERN),name@sha256:<digest>)
 	SMOKE_IMAGE="$${IMAGE_REF}" SMOKE_ENGINE=$(notdir $(CONTAINER_ENGINE)) $(RUN) pytest tests/smoke \
 		-k 'not test_build_rejects_a_build_date_that_is_not_rfc_3339'
+
+require-image-workflow:
+	@if [ "$${GITHUB_ACTIONS-}" != true ] || [ "$${GITHUB_REF-}" != refs/heads/main ] || \
+		[ "$${GITHUB_WORKFLOW_REF-}" != '$(RELEASE_WORKFLOW)@refs/heads/main' ]; then \
+		printf 'error: %s runs only in the image-build workflow on main\n' '$(MAKECMDGOALS)' >&2; exit 2; \
+	fi
 
 require-container-engine:
 	@if [ -z "$(CONTAINER_ENGINE)" ]; then \
@@ -516,6 +674,10 @@ sbom: $(SYFT)
 	mkdir -p $(SBOM_DIR)
 	$(SYFT_RUN) scan "registry:$${IMAGE_REF}" --quiet \
 		--output spdx-json=$(SBOM_DIR)/sbom.spdx.json --output cyclonedx-json=$(SBOM_DIR)/sbom.cdx.json
+	$(MAKE) --no-print-directory sbom-check
+
+sbom-check:
+	$(call REQUIRE_IMAGE_REF,$(DIGEST_REFERENCE_PATTERN),name@sha256:<digest>)
 	jq -e --arg digest "$${IMAGE_REF##*@}" '$(SPDX_DESCRIBES_DIGEST)' $(SBOM_DIR)/sbom.spdx.json >/dev/null || { \
 		printf 'error: the SPDX SBOM does not describe %s\n' "$${IMAGE_REF}" >&2; exit 1; }
 	jq -e --arg digest "$${IMAGE_REF##*@}" '.metadata.component.version == $$digest' \
@@ -523,24 +685,25 @@ sbom: $(SYFT)
 		printf 'error: the CycloneDX SBOM does not describe %s\n' "$${IMAGE_REF}" >&2; exit 1; }
 	@printf 'SBOM of %s: %s packages\n' "$${IMAGE_REF}" "$$(jq '.packages | length' $(SBOM_DIR)/sbom.spdx.json)"
 
-image-promote: $(CRANE)
-	$(call REQUIRE_IMAGE_REF,$(STAGED_REFERENCE_PATTERN),$(STAGING_REPOSITORY)@sha256:<digest>)
-	@printf '%s\n' "$${RELEASE_TAG}" | grep -Eqx '[0-9a-f]{40}-[0-9]+' || { \
-		printf 'error: RELEASE_TAG must be <commit>-<CodeBuild build number>\n' >&2; exit 2; }
-	$(CRANE_RUN) copy "$${IMAGE_REF}" "$(RELEASE_REPOSITORY):$${RELEASE_TAG}"
+image-release: require-image-workflow $(CRANE)
+	$(call REQUIRE_IMAGE_REF,$(RELEASE_REFERENCE_PATTERN),$(RELEASE_REPOSITORY)@sha256:<digest>)
+	@printf '%s\n' "$${RELEASE_TAG}" | grep -Eqx "$$(git rev-parse HEAD)-[0-9]+-[0-9]+" || { \
+		printf 'error: RELEASE_TAG must be <checked-out commit>-<run number>-<run attempt>\n' >&2; exit 2; }
+	@if [ "$$(cat $(IMAGE_RELEASE_DIR)/verified.txt 2>/dev/null)" != "$${IMAGE_REF}" ]; then \
+		printf 'error: run make verify-release for IMAGE_REF first\n' >&2; exit 1; \
+	fi
+	$(MAKE) --no-print-directory release-tag-absent
+	$(CRANE_RUN) tag "$${IMAGE_REF}" "$${RELEASE_TAG}"
 	@digest="$${IMAGE_REF##*@}"; \
 	tagged="$$($(CRANE_RUN) digest "$(RELEASE_REPOSITORY):$${RELEASE_TAG}")"; \
-	served="$$($(CRANE_RUN) manifest "$(RELEASE_REPOSITORY)@$$digest" | sha256sum | cut -d ' ' -f 1)"; \
-	if [ "$$tagged" != "$$digest" ] || [ "sha256:$$served" != "$$digest" ]; then \
-		printf 'error: GHCR holds %s (manifest sha256:%s), expected the staged %s\n' "$$tagged" "$$served" "$$digest" >&2; \
+	if [ "$$tagged" != "$$digest" ]; then \
+		printf 'error: %s resolves to %s, expected %s\n' "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" "$$tagged" "$$digest" >&2; \
 		exit 1; \
 	fi; \
-	mkdir -p $(IMAGE_RELEASE_DIR); \
-	jq -n --arg staged "$${IMAGE_REF}" --arg release "$(RELEASE_REPOSITORY)@$$digest" --arg digest "$$digest" \
-		--arg tag "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" --arg commit "$$(git rev-parse HEAD)" \
-		'{commit: $$commit, digest: $$digest, staged: $$staged, release: $$release, tag: $$tag}' \
+	jq -n --arg release "$${IMAGE_REF}" --arg digest "$$digest" --arg tag "$(RELEASE_REPOSITORY):$${RELEASE_TAG}" \
+		--arg commit "$$(git rev-parse HEAD)" '{commit: $$commit, digest: $$digest, release: $$release, tag: $$tag}' \
 		> $(IMAGE_RELEASE_DIR)/image.json; \
-	printf 'promoted %s to %s\n' "$${IMAGE_REF}" "$(RELEASE_REPOSITORY)@$$digest"
+	printf 'released %s as %s\n' "$${IMAGE_REF}" "$(RELEASE_REPOSITORY):$${RELEASE_TAG}"
 
 sign: $(COSIGN)
 	$(call REQUIRE_IMAGE_REF,$(RELEASE_REFERENCE_PATTERN),$(RELEASE_REPOSITORY)@sha256:<digest>)
@@ -554,20 +717,29 @@ sign: $(COSIGN)
 verify-release: $(COSIGN)
 	$(call REQUIRE_IMAGE_REF,$(RELEASE_REFERENCE_PATTERN),$(RELEASE_REPOSITORY)@sha256:<digest>)
 	mkdir -p $(IMAGE_RELEASE_DIR) $(SIGSTORE_TUF_DIR)
+	rm -f $(IMAGE_RELEASE_DIR)/verified.txt
+	gh --version | head -n 1 > $(IMAGE_RELEASE_DIR)/gh-version.txt
 	env -i $(foreach name,$(COSIGN_ENV_PASSTHROUGH) DOCKER_CONFIG,$(name)="$${$(name)-}") \
 		TUF_ROOT='$(CURDIR)/$(SIGSTORE_TUF_DIR)' $(COSIGN) verify \
 		--certificate-identity '$(RELEASE_SIGNER_IDENTITY)' \
 		--certificate-oidc-issuer '$(SIGSTORE_OIDC_ISSUER)' \
 		--certificate-github-workflow-repository '$(RELEASE_SOURCE_REPOSITORY)' \
 		--certificate-github-workflow-ref refs/heads/main \
+		--certificate-github-workflow-sha "$(VERIFY_COMMIT)" \
 		"$${IMAGE_REF}" > $(IMAGE_RELEASE_DIR)/cosign-verify.json
 	gh attestation verify "oci://$${IMAGE_REF}" --repo '$(RELEASE_SOURCE_REPOSITORY)' \
-		--signer-workflow '$(RELEASE_WORKFLOW)' --predicate-type '$(SLSA_PREDICATE)' \
+		--signer-workflow '$(RELEASE_WORKFLOW)@refs/heads/main' --signer-digest "$(VERIFY_COMMIT)" \
+		--predicate-type '$(SLSA_PREDICATE)' \
+		--source-ref refs/heads/main --source-digest "$(VERIFY_COMMIT)" --deny-self-hosted-runners \
 		--format json > $(IMAGE_RELEASE_DIR)/provenance-verify.json
 	gh attestation verify "oci://$${IMAGE_REF}" --repo '$(RELEASE_SOURCE_REPOSITORY)' \
-		--signer-workflow '$(RELEASE_WORKFLOW)' --predicate-type '$(SPDX_PREDICATE)' \
+		--signer-workflow '$(RELEASE_WORKFLOW)@refs/heads/main' --signer-digest "$(VERIFY_COMMIT)" \
+		--predicate-type '$(SPDX_PREDICATE)' \
+		--source-ref refs/heads/main --source-digest "$(VERIFY_COMMIT)" --deny-self-hosted-runners \
 		--format json > $(IMAGE_RELEASE_DIR)/sbom-verify.json
-	@printf 'verified the signature, provenance and SBOM attestations of %s\n' "$${IMAGE_REF}"
+	printf '%s\n' "$${IMAGE_REF}" > $(IMAGE_RELEASE_DIR)/verified.txt
+	@printf 'verified the signature, provenance and SBOM attestations of %s with %s\n' "$${IMAGE_REF}" \
+		"$$(cat $(IMAGE_RELEASE_DIR)/gh-version.txt)"
 
 image-smoke: require-uv require-container-engine
 	$(CONTAINER_ENGINE) build --file Containerfile --tag $(SMOKE_IMAGE) \

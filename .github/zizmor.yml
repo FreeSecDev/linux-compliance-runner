@@ -2,5 +2,6 @@
 rules:
   undocumented-permissions:
     ignore:
-      - image-build.yml:35
-      - image-build.yml:146
+      - image-build.yml:85
+      - image-build.yml:188
+      - image-build.yml:252
