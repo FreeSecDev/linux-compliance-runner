@@ -10,7 +10,7 @@
 ## Context
 
 The collection repository runs its CI inside one image that carries every tool it needs, consumed by digest.
-Collection ADR 0007 decides that the release image is built in AWS and published to GHCR, and collection ADR 0006
+Collection ADR 0007 decides that the release image is built on GitHub-hosted runners and published to GHCR, and collection ADR 0006
 decides which security tools the platform uses and that every tool is installed by pinned version and checksum.
 This repository must define the image itself: base, package and tool installation, runtime posture and how it is tested.
 The image is a job toolbox, not a self-hosted runner service.
@@ -40,7 +40,7 @@ The image is a job toolbox, not a self-hosted runner service.
 - **Tests:** `tests/smoke/` runs the built image with `--read-only --cap-drop=ALL --security-opt=no-new-privileges
   --user 10001 --network=none` and tmpfs mounts, through `make image-smoke`. A `container` CI job runs it on a
   GitHub-hosted runner as a test build. That image is never pushed and is not a release artifact; release images are built
-  only in AWS (collection ADR 0007, FREES-36).
+  only by the `image-build` workflow on `main` ([ADR 0002](0002-image-build-pipeline.md), FREES-36).
 - **Lint:** hadolint with `failure-threshold: style` and no ignores, plus a check that `toolbox/uv.lock` matches its `pyproject.toml`.
 
 ## Alternatives evaluated

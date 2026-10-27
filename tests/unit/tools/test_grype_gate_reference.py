@@ -98,9 +98,9 @@ def cli_arguments(report: Path, exceptions: Path, *extra: str) -> list[str]:
     ]
 
 
-STAGED: Final[str] = "910736812072.dkr.ecr.eu-west-1.amazonaws.com/linux-compliance-runner-staging"
+PUSHED: Final[str] = "ghcr.io/freesecdev/linux-compliance-runner"
 BUILT_DIGEST: Final[str] = "sha256:" + "d" * 64
-BUILT_REFERENCE: Final[str] = f"{STAGED}@{BUILT_DIGEST}"
+BUILT_REFERENCE: Final[str] = f"{PUSHED}@{BUILT_DIGEST}"
 DOCKER_MANIFEST: Final[str] = "application/vnd.docker.distribution.manifest.v2+json"
 OCI_MANIFEST: Final[str] = "application/vnd.oci.image.manifest.v1+json"
 REFERENCE_SETTINGS: Final[gate.GateSettings] = gate.GateSettings(
@@ -156,12 +156,12 @@ def test_without_a_reference_the_gate_does_not_require_a_registry_scan() -> None
 @pytest.mark.parametrize(
     "reference",
     [
-        f"{STAGED}:latest",
-        f"{STAGED}:{'a' * 40}-1",
-        STAGED,
-        f"{STAGED}@sha256:{'d' * 63}",
-        f"{STAGED}@sha512:{'d' * 128}",
-        f"{STAGED}:tag@{BUILT_DIGEST}",
+        f"{PUSHED}:latest",
+        f"{PUSHED}:{'a' * 40}-1",
+        PUSHED,
+        f"{PUSHED}@sha256:{'d' * 63}",
+        f"{PUSHED}@sha512:{'d' * 128}",
+        f"{PUSHED}:tag@{BUILT_DIGEST}",
         f"registry:{BUILT_REFERENCE}",
         f"{BUILT_REFERENCE}\n",
         f"UPPER/{BUILT_REFERENCE}",
@@ -178,8 +178,8 @@ def test_reference_must_be_a_digest_never_a_tag(reference: str) -> None:
 
 
 def test_report_of_a_tag_fails_even_if_the_digest_matches() -> None:
-    failures = decide_reference(registry_report(userInput=f"{STAGED}:latest"))
-    assert failures == (f"report scanned '{STAGED}:latest', expected exactly '{BUILT_REFERENCE}'",)
+    failures = decide_reference(registry_report(userInput=f"{PUSHED}:latest"))
+    assert failures == (f"report scanned '{PUSHED}:latest', expected exactly '{BUILT_REFERENCE}'",)
 
 
 def test_report_of_another_manifest_fails() -> None:
@@ -276,6 +276,6 @@ def test_main_binds_the_scan_to_the_reference(
     arguments[arguments.index("--image-id") + 1] = BUILT_DIGEST
     assert gate.main(arguments, now=NOW) == 0
     assert "PASSED" in capsys.readouterr().out
-    arguments[arguments.index("--image-reference") + 1] = f"{STAGED}:latest"
+    arguments[arguments.index("--image-reference") + 1] = f"{PUSHED}:latest"
     assert gate.main(arguments, now=NOW) == 1
     assert "a tag is never accepted" in capsys.readouterr().out

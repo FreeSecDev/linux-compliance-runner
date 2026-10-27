@@ -31,7 +31,7 @@ PyPI package, so no separate install is needed.
 | `install` | implemented | `uv sync --frozen`, installs both git hook types |
 | `format` | implemented | `ruff check --fix` and `ruff format` |
 | `lint` | implemented | `lint-repo`, `lint-skills`, `lint-python`, `lint-yaml`, `lint-actions`, `lint-shell`, `lint-container`, `lint-renovate` |
-| `lint-shell` | implemented | ShellCheck on every tracked `*.sh` (the CodeBuild build script and `tools/aws/image-build.sh`) |
+| `lint-shell` | implemented | ShellCheck on every tracked `*.sh` (the in-container build script `tools/image/buildah.sh`) |
 | `lint-python` | implemented | Ruff lint, Ruff format check, Pylint |
 | `lint-yaml` | implemented | `yamllint --strict` |
 | `lint-actions` | implemented | actionlint |
@@ -49,14 +49,17 @@ PyPI package, so no separate install is needed.
 | `lint-container` | implemented | `toolbox-lock-check` (`uv lock --check` for `toolbox/`) and hadolint on every `Containerfile` with `.hadolint.yaml` (no ignores) |
 | `toolbox-lock-check` | implemented | Fails when `toolbox/uv.lock` does not match `toolbox/pyproject.toml` |
 | `lint-iac` | pending FREES-30 | OpenTofu validation and Checkov |
-| `aws-bootstrap` | implemented | Points to `make aws-bootstrap` in the collection repository, which owns the AWS account IaC (`infra/account`) including this repository's build resources |
-| `image-build` | implemented | Starts the CodeBuild build of `HEAD` with the AWS credentials in the environment (the `image-build` workflow assumes the build role through OIDC), waits, and verifies the staged digest; writes `build/image-build/build.json`. See [`image-build.md`](image-build.md) |
-| `staging-login`, `staging-logout`, `image-pull`, `image-smoke-staged` | implemented | Log in to (or out of) ECR staging, pull `IMAGE_REF` (a staged `name@sha256:` reference) and check its digest and revision label, run the smoke tests against it |
+| `image-build` | implemented | Builds a `git archive` of `HEAD` with rootless Buildah in the digest-pinned `quay.io/buildah/stable` image (capabilities cut to six, the checked-in seccomp profile `tools/image/seccomp-buildah.json`, native overlay; no credentials, works locally), exports `build/image-build/image.tar` and records its hash and config digest in `build/image-build/build.json`; refuses a checkout that is not `EXPECTED_COMMIT`. See [`image-build.md`](image-build.md) |
+| `image-push` | implemented | In the `image-build` workflow on `main` only, after `image-archive-check`: re-checks the archive hash, proves the release tag absent, pushes it to GHCR as `candidate-<commit>-<run>-<attempt>`, checks the served digest, media type, config digest and revision label, and writes `build/image-push/push.json` |
+| `image-archive-check` | implemented | Checks `build/image-build/image.tar` against `EXPECTED_ARCHIVE_SHA256`, `EXPECTED_CONFIG_DIGEST` and `HEAD`; the config member name is derived from `EXPECTED_CONFIG_DIGEST`, never read from the archive |
+| `image-smoke-archive` | implemented | Runs the same archive check, loads the archive and runs the smoke tests against it |
+| `release-tag-absent` | implemented | Fails unless `RELEASE_TAG` is proven absent from GHCR; only `MANIFEST_UNKNOWN` or `NAME_UNKNOWN` counts as absent, every other registry error fails |
+| `image-pull`, `image-smoke-pulled` | implemented | Pull `IMAGE_REF` (a `name@sha256:` reference) and check its digest and revision label, run the smoke tests against it |
 | `image-scan` | implemented | Scans the local test image (`SCAN_IMAGE`, default the smoke tag; run `make image-smoke` first) or, with `IMAGE_REF=name@sha256:<digest>`, exactly that registry digest, with the pinned, checksum-verified Grype and a freshly verified vulnerability database, then applies the fail-closed exception gate `tools/security/grype_gate.py`; reports land in `build/image-scan/`. See [`image.md`](image.md#vulnerability-gate) |
 | `grype-expected-config` | implemented | Rewrites `security/grype-expected-config.json` from the last `make image-scan` report (variable fields blanked); used after a Grype bump, and the diff is reviewed |
-| `sbom` | implemented | SPDX and CycloneDX SBOMs of the registry digest `IMAGE_REF` with the pinned, signature-verified Syft; fails unless the SBOM describes exactly that manifest digest |
-| `image-promote` | implemented | Copies the staged digest to GHCR with the pinned crane (tag `RELEASE_TAG`) and fails unless GHCR serves the same digest |
-| `sign`, `verify-release` | implemented | cosign keyless signature of the GHCR digest (in the workflow only), then verification of the signature and of the provenance and SBOM attestations |
+| `sbom` | implemented | SPDX and CycloneDX SBOMs of the registry digest `IMAGE_REF` with the pinned, signature-verified Syft; fails unless the SBOM describes exactly that manifest digest; `sbom-check` repeats only that check on `build/sbom/` |
+| `sign`, `verify-release` | implemented | cosign keyless signature of the GHCR digest (in the workflow only), then verification of the signature and of the provenance and SBOM attestations, bound to `main` and the commit |
+| `image-release` | implemented | In the `image-build` workflow on `main` only: tags the verified digest as `RELEASE_TAG` (`<commit>-<run>-<attempt>`) with the pinned crane, after `release-tag-absent` |
 | `image-smoke` | implemented | Builds `localhost/linux-compliance-runner:smoke` locally with docker or podman (never pushed) and runs `tests/smoke` against it read-only, as UID 10001, without capabilities or network; see [`image.md`](image.md) |
 | `release-check` | pending FREES-84 | Release readiness |
 

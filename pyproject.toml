@@ -53,6 +53,7 @@ ignore = ["D203", "D213", "TRY003"]
 "tools/**" = ["T201"]
 "tests/smoke/**" = ["S108", "S603"]
 "tests/unit/tools/test_image_build_script.py" = ["S603"]
+"tests/unit/tools/test_image_build_makefile.py" = ["S603"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -76,7 +77,8 @@ known-first-party = ["tools"]
 "ruff INP001 (tests/**)" = "Tests are collected in importlib mode and are not importable packages."
 "ruff T201 (tools/**)" = "Command-line tools report to the terminal with print by design."
 "ruff S603 (tests/smoke/**)" = "The smoke tests exist to run the container engine with an argument list built from constants and the SMOKE_IMAGE variable; shell=False is used and no untrusted input reaches the call."
-"ruff S603 (tests/unit/tools/test_image_build_script.py)" = "The test runs tools/aws/image-build.sh with bash from PATH and fake aws, date and sleep commands in a temporary directory; the argument list is built from constants and shell=False is used."
+"ruff S603 (tests/unit/tools/test_image_build_script.py)" = "The test runs tools/image/buildah.sh (build and export) with bash from PATH and fake buildah, runuser, install, id, chown and uname commands in a temporary directory; the argument list is built from constants and shell=False is used."
+"ruff S603 (tests/unit/tools/test_image_build_makefile.py)" = "The test runs make from PATH on the repository Makefile, and git rev-parse to read HEAD, with a minimal environment and fake container engine and crane commands written to a temporary directory, to check that the image targets refuse tags, another commit, a changed archive, an existing or unprovable release tag and runs outside the image-build workflow; the argument list is built from constants and shell=False is used."
 "ruff S108 (tests/smoke/**)" = "/tmp is the path of the tmpfs mount inside the container under test, not a temporary file on the host."
 
 [tool.mypy]

@@ -9,7 +9,7 @@ Task-specific guidance lives in [`.agents/skills/`](.agents/skills/). Skills for
 ## Project
 
 This repository builds the minimal OCI toolbox image used by the `freesecdev.linux_compliance` CI.
-It contains no collection code. The image is built in AWS, published to GHCR, signed and attested, and consumed by digest.
+It contains no collection code. The image is built on GitHub-hosted runners, published to GHCR, signed and attested, and consumed by digest.
 
 ## Traceability
 
@@ -25,9 +25,11 @@ It contains no collection code. The image is built in AWS, published to GHCR, si
 2. The base image is pinned by digest; packages and Python dependencies are pinned and hash-locked.
 3. The image runs as a non-root user, contains no SSH daemon or credentials, and works with a read-only root file system
    and all capabilities dropped.
-4. Release images are built only in AWS; never on a local machine or a GitHub-hosted runner.
+4. Release images are built and published only by the `image-build` workflow on `main`, on GitHub-hosted runners
+   (ADR 0002); never published from a local machine or a self-hosted runner.
 5. A release is never published if any scan, SBOM, signature or smoke test step fails.
-6. Pin GitHub Actions to full commit SHAs. AWS access is OIDC-only; no long-lived keys.
+6. Pin GitHub Actions to full commit SHAs. The image workflow uses only the per-job `GITHUB_TOKEN`; no AWS access
+   and no long-lived keys.
 7. Every YAML file starts with `---` followed by a newline. No inline code comments.
 8. Never print, commit or log credentials. Never report work as successful unless it actually ran.
 
